@@ -130,7 +130,11 @@ function createWindow(initialFile, opts = {}) {
     minHeight: stickyRestore ? STICKY_MIN_H : 480,
     frame: false,
     transparent: true,
-    backgroundColor: '#00000000',
+    // The OS window can be transparent (sticky rounded corners show through),
+    // but only a born-sticky starts that way: a normal editor window paints
+    // white so loading / resizing never flashes the transparent base (which
+    // renders as black garbage on Wayland). Stickify/restore toggle this.
+    backgroundColor: stickyRestore ? '#00000000' : '#ffffff',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -346,6 +350,9 @@ ipcMain.handle('wm-sticky-shrink', async (e, size) => {
   // only got lowered after the first restore (via unlockStickySize), which is
   // why the first stickify used to stall on the way down.
   if (process.platform !== 'darwin') { win.setResizable(true); win.setMinimumSize(0, 0); win.setMaximumSize(0, 0); }
+  // Go transparent for the post-it: the renderer is already in sticky-mode, so
+  // the rounded corners must show through (the normal editor paints white).
+  win.setBackgroundColor('#00000000');
   pinStickyOnTop(win);
   await animateBounds(win, target, STICKY_ANIM_MS);
   const sb = win.getBounds();
@@ -404,6 +411,10 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   win._sticky = null;
   unlockStickySize(win);
   unpinStickyOnTop(win);
+  // Back to the opaque editor: paint white BEFORE the grow so the area the
+  // window expands into shows white, not the transparent base flashing black
+  // on every animation tick (the renderer reflows a beat behind setBounds).
+  win.setBackgroundColor('#ffffff');
   if (wasMaximized) {
     win.maximize();
   } else if (originalBounds) {
