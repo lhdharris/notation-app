@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Diagonal grey (top-left) to white (bottom-right), matching the projector icon. -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#bcbec3"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="200" ry="200" fill="url(#bg)"/>
+
+  <!-- A single flat page with a folded top-right corner — every edge straight. -->
+  <g fill="#ffffff" stroke="#2B2E36" stroke-width="26"
+     stroke-linejoin="round" stroke-linecap="round">
+    <path d="M 300 244 L 612 244 L 724 356 L 724 780 L 300 780 Z"/>
+    <!-- Dog-ear: the turned-down corner, drawn with two straight lines. -->
+    <path d="M 612 244 L 612 356 L 724 356" fill="none"/>
+  </g>
+
+  <!-- Note lines on the page (the third is short). -->
+  <g stroke="#2B2E36" stroke-width="20" stroke-linecap="round">
+    <line x1="360" y1="456" x2="664" y2="456"/>
+    <line x1="360" y1="540" x2="664" y2="540"/>
+    <line x1="360" y1="624" x2="568" y2="624"/>
+  </g>
+</svg>

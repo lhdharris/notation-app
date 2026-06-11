@@ -1,0 +1,21 @@
+# Dependencies (reinstalled per-platform; native modules are not portable)
+**/node_modules/
+
+# Build output (installers are attached to GitHub releases, not committed)
+electron-app/dist/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log
+
+# Local Claude Code settings (machine-specific permissions, not shared)
+.claude/settings.local.json
+
+# Reference projects that live under res/ but have their own git repos
+# (lhdharris/projector, lhdharris/folia-browser) — not part of Notation.
+res/projector-app/
+res/tabless-browser/
+
+# Private spec notes
+instructions.txt
