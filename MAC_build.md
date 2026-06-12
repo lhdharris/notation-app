@@ -1,14 +1,13 @@
-# Building Notation v1.2.0 on macOS + releasing on GitHub
+# Building Notation v1.2.1 on macOS + uploading to the GitHub release
 
 Instructions for Claude Code running on the Mac. Goal: build the macOS and
-Windows installers for **v1.2.0**, then publish a GitHub release containing
-**all four** artifacts — the two you build here plus the two Linux packages that
-were already built on the Linux machine.
+Windows installers for **v1.2.1** and upload them to the **already-published**
+GitHub release `v1.2.1`, which was created from the Linux machine and already
+contains the `.rpm` and `.deb`.
 
 Repo: `lhdharris/notation-app` (https://github.com/lhdharris/notation-app).
-This folder syncs between machines via Syncthing, so the v1.2.0 commit and the
-Linux build artifacts should already be present locally — verify rather than
-assume (step 1).
+This folder syncs between machines via Syncthing, so the v1.2.1 commit should
+already be present locally — verify rather than assume (step 1).
 
 ## 0. Prerequisites
 
@@ -23,25 +22,19 @@ assume (step 1).
 
 ```bash
 cd <this folder>           # the synced notation-app repo root
-git log --oneline -1       # must be the "Notation v1.2.0" commit
-grep '"version"' electron-app/package.json   # must say 1.2.0
+git log --oneline -1       # must be the "Notation v1.2.1" commit
+grep '"version"' electron-app/package.json   # must say 1.2.1
 git status --short         # should be clean (untracked dist/ files are fine)
 ```
 
-If the v1.2.0 commit isn't here yet, Syncthing hasn't caught up — `git pull`
+If the v1.2.1 commit isn't here yet, Syncthing hasn't caught up — `git pull`
 from GitHub instead (the commit is pushed to `main`).
 
-The Linux packages should already exist (built on the Linux box):
+The release should already exist with the two Linux assets:
 
 ```bash
-ls -la electron-app/dist/notation-app-1.2.0.x86_64.rpm \
-       electron-app/dist/notation-app_1.2.0_amd64.deb
+gh release view v1.2.1 --repo lhdharris/notation-app
 ```
-
-If they're missing (e.g. Syncthing ignores `dist/`), the `.deb` can be rebuilt
-right here with `npm run dist:deb`; the `.rpm` needs `brew install rpm` first,
-then `npm run dist`. Otherwise ask the user to copy them over — don't release
-without them.
 
 ## 2. Install dependencies (per-platform, not synced)
 
@@ -56,8 +49,8 @@ npm install
 ## 3. Build macOS (both architectures) and Windows
 
 ```bash
-npx electron-builder --mac dmg --x64 --arm64   # → dist/Notation-1.2.0.dmg (intel) + Notation-1.2.0-arm64.dmg
-npm run dist:win                               # → dist/Notation Setup 1.2.0.exe (NSIS, x64)
+npx electron-builder --mac dmg --x64 --arm64   # → dist/Notation-1.2.1.dmg (intel) + Notation-1.2.1-arm64.dmg
+npm run dist:win                               # → dist/Notation Setup 1.2.1.exe (NSIS, x64)
 ```
 
 Notes:
@@ -67,45 +60,35 @@ Notes:
 - The Windows cross-build needs no Wine with electron-builder 26 — if it
   nevertheless complains about missing wine, `brew install --cask wine-stable`
   and rerun.
-- Smoke-test the mac build before releasing: `open "dist/Notation-1.2.0-arm64.dmg"`
+- Smoke-test the mac build before uploading: `open "dist/Notation-1.2.1-arm64.dmg"`
   (or the x64 one on an Intel Mac), drag-launch the app, open a `.md` file,
-  confirm the editor + formatting toolbar render. Gatekeeper will warn because
-  it's unsigned — right-click → Open.
+  confirm the editor renders and the Dock shows the **new pastel sticky-notes
+  icon** (not the old grey document). Gatekeeper will warn because it's
+  unsigned — right-click → Open.
 
-## 4. Create the GitHub release
+## 4. Upload to the existing GitHub release
 
-Release body = the **v1.2.0 section only** of `RELEASE_NOTES.md` (everything
-above the first `---` separator):
+The `v1.2.1` release and tag already exist (created from the Linux box with the
+`.rpm` and `.deb`), so just upload — substitute the actual dmg/exe filenames
+from step 3:
 
 ```bash
 cd <repo root>
-sed -n '1,/^---$/p' RELEASE_NOTES.md | sed '$d' > /tmp/notation-1.2.0-notes.md
-```
-
-Then create the release (this also creates the `v1.2.0` tag on `main`) with all
-four artifacts — substitute the actual dmg/exe filenames from step 3:
-
-```bash
-gh release create v1.2.0 \
+gh release upload v1.2.1 \
   --repo lhdharris/notation-app \
-  --target main \
-  --title "Notation v1.2.0" \
-  --notes-file /tmp/notation-1.2.0-notes.md \
-  "electron-app/dist/Notation-1.2.0.dmg" \
-  "electron-app/dist/Notation-1.2.0-arm64.dmg" \
-  "electron-app/dist/Notation Setup 1.2.0.exe" \
-  "electron-app/dist/notation-app-1.2.0.x86_64.rpm" \
-  "electron-app/dist/notation-app_1.2.0_amd64.deb"
+  "electron-app/dist/Notation-1.2.1.dmg" \
+  "electron-app/dist/Notation-1.2.1-arm64.dmg" \
+  "electron-app/dist/Notation Setup 1.2.1.exe"
 ```
 
 (Don't upload `.blockmap`/`.yml` update-metadata files — the app has no
-auto-updater; the v1.1.1 release shipped bare packages only.)
+auto-updater; releases ship bare packages only.)
 
 ## 5. Verify
 
 ```bash
-gh release view v1.2.0 --repo lhdharris/notation-app
+gh release view v1.2.1 --repo lhdharris/notation-app
 ```
 
-Confirm: tag `v1.2.0`, five assets (2 dmg, 1 exe, 1 rpm, 1 deb), and the notes
+Confirm: tag `v1.2.1`, five assets (2 dmg, 1 exe, 1 rpm, 1 deb), and the notes
 render correctly. Done.

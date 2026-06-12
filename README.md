@@ -95,6 +95,19 @@ npm run dist:all-on-mac   # dmg + exe + deb in one go
 
 Output lands in `electron-app/dist/`.
 
+### App icon & banner
+
+The icon's single source of truth is `electron-app/renderer/notation-icon.svg`
+(also used directly as the window favicon). The PNGs the build consumes
+(`electron-app/build/icons/*.png`, `electron-app/assets/icon.png`) and the
+README banner (`res/banner.png`) are generated from it — after editing the SVG,
+regenerate both (needs `python3-gobject`, librsvg and pycairo):
+
+```bash
+python3 res/make-icons.py
+python3 res/make-banner.py
+```
+
 ---
 
 <p align="center"><sub>Local-first. Your notes, your folders, your disks.</sub></p>

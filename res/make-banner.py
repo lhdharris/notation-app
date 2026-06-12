@@ -48,30 +48,25 @@ strip = ''.join(
     for i, c in enumerate(PASTELS)
 )
 
-# The app icon (renderer/notation-icon.svg artwork), scaled into a 150px tile.
-ICON_X, ICON_Y, ICON_S = 64, 64, 150
+# The app icon, inlined straight from the source SVG (its ids are ni-prefixed
+# so they can't clash with the banner's), scaled into a tile on the left. The
+# tile's dark background nearly matches the banner's, so the fanned notes read
+# as floating; a hairline stroke keeps the rounded square legible.
+import re  # noqa: E402
+
+ICON_SVG = os.path.join(RES, '..', 'electron-app', 'renderer', 'notation-icon.svg')
+with open(ICON_SVG) as f:
+    icon_body = re.sub(r'^.*?<svg[^>]*>|</svg>\s*$', '', f.read(), flags=re.S)
+
+ICON_X, ICON_Y, ICON_S = 56, 64, 182
 icon = f"""
 <g transform="translate({ICON_X},{ICON_Y}) scale({ICON_S / 1024})">
-  <rect width="1024" height="1024" rx="200" ry="200" fill="url(#iconbg)"/>
-  <g fill="#ffffff" stroke="#2B2E36" stroke-width="26" stroke-linejoin="round" stroke-linecap="round">
-    <path d="M 300 244 L 612 244 L 724 356 L 724 780 L 300 780 Z"/>
-    <path d="M 612 244 L 612 356 L 724 356" fill="none"/>
-  </g>
-  <g stroke="#2B2E36" stroke-width="20" stroke-linecap="round">
-    <line x1="360" y1="456" x2="664" y2="456"/>
-    <line x1="360" y1="540" x2="664" y2="540"/>
-    <line x1="360" y1="624" x2="568" y2="624"/>
-  </g>
+  {icon_body}
+  <rect width="1024" height="1024" rx="200" ry="200" fill="none" stroke="#3d414d" stroke-width="8"/>
 </g>"""
 
 TX = ICON_X + ICON_S + 42  # text column, left-aligned beside the icon
 svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
-  <defs>
-    <linearGradient id="iconbg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#bcbec3"/>
-      <stop offset="1" stop-color="#ffffff"/>
-    </linearGradient>
-  </defs>
   <rect width="{W}" height="{H}" fill="#23252d"/>
   {icon}
   {strip}

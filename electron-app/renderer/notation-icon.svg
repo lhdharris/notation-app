@@ -1,25 +1,51 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Notation app icon: a fanned stack of pastel sticky notes (the app's
+       post-it palette) on dark slate, the front note carrying ink lines.
+       Ids are prefixed "ni-" so this markup can be inlined into other SVGs
+       (res/make-banner.py does exactly that). -->
   <defs>
-    <!-- Diagonal grey (top-left) to white (bottom-right), matching the projector icon. -->
-    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#bcbec3"/>
-      <stop offset="1" stop-color="#ffffff"/>
+    <linearGradient id="ni-bg" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#31343f"/>
+      <stop offset="1" stop-color="#1d1f26"/>
     </linearGradient>
+    <filter id="ni-soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
   </defs>
-  <rect width="1024" height="1024" rx="200" ry="200" fill="url(#bg)"/>
 
-  <!-- A single flat page with a folded top-right corner — every edge straight. -->
-  <g fill="#ffffff" stroke="#2B2E36" stroke-width="26"
-     stroke-linejoin="round" stroke-linecap="round">
-    <path d="M 300 244 L 612 244 L 724 356 L 724 780 L 300 780 Z"/>
-    <!-- Dog-ear: the turned-down corner, drawn with two straight lines. -->
-    <path d="M 612 244 L 612 356 L 724 356" fill="none"/>
+  <rect width="1024" height="1024" rx="200" ry="200" fill="url(#ni-bg)"/>
+
+  <!-- Back note: pink, tilted hard left. -->
+  <g transform="rotate(-16 512 512)">
+    <rect x="277" y="277" width="470" height="470" rx="26" fill="#000000" opacity="0.30"
+          filter="url(#ni-soft)" transform="translate(0 18)"/>
+    <rect x="277" y="277" width="470" height="470" rx="26" fill="#ffb8db"/>
   </g>
 
-  <!-- Note lines on the page (the third is short). -->
-  <g stroke="#2B2E36" stroke-width="20" stroke-linecap="round">
-    <line x1="360" y1="456" x2="664" y2="456"/>
-    <line x1="360" y1="540" x2="664" y2="540"/>
-    <line x1="360" y1="624" x2="568" y2="624"/>
+  <!-- Middle note: blue, tilted right. -->
+  <g transform="rotate(11 512 512)">
+    <rect x="277" y="277" width="470" height="470" rx="26" fill="#000000" opacity="0.30"
+          filter="url(#ni-soft)" transform="translate(0 18)"/>
+    <rect x="277" y="277" width="470" height="470" rx="26" fill="#add6ff"/>
+  </g>
+
+  <!-- Front note: yellow, nearly straight, bottom-right corner folded up. -->
+  <g transform="rotate(-3 512 512)">
+    <rect x="277" y="277" width="470" height="470" rx="26" fill="#000000" opacity="0.30"
+          filter="url(#ni-soft)" transform="translate(0 18)"/>
+    <!-- Note body with the bottom-right corner cut away for the fold. -->
+    <path d="M 303 277
+             L 721 277 Q 747 277 747 303
+             L 747 611 L 611 747
+             L 303 747 Q 277 747 277 721
+             L 277 303 Q 277 277 303 277 Z" fill="#ffe59e"/>
+    <!-- The turned-up flap. -->
+    <path d="M 611 747 L 747 611 L 637 619 Q 615 621 613 643 Z" fill="#f2c66f"/>
+    <!-- Ink: a heading stroke and two body lines, the last cut short. -->
+    <g stroke="#2b2e36" stroke-linecap="round" fill="none">
+      <line x1="357" y1="395" x2="563" y2="395" stroke-width="34"/>
+      <line x1="357" y1="487" x2="667" y2="487" stroke-width="22"/>
+      <line x1="357" y1="567" x2="529" y2="567" stroke-width="22"/>
+    </g>
   </g>
 </svg>

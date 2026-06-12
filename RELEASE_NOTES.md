@@ -1,3 +1,19 @@
+# Notation v1.2.1
+
+A minimalist local-first Markdown editor with desktop sticky notes. Every note is
+just a `.md` file in a folder you control — no cloud, no account, just text files.
+
+A visual refresh. (v1.2.0 below was never published, so this release also carries
+everything new since v1.1.1.)
+
+## Design
+- **Redesigned app icon** — a fanned stack of pastel sticky notes (the app's own
+  post-it palette) on dark slate, replacing the plain grey document. Carried
+  through to all platform icons, the window/taskbar icon, the README banner and
+  the in-app empty state.
+
+---
+
 # Notation v1.2.0
 
 A minimalist local-first Markdown editor with desktop sticky notes. Every note is
