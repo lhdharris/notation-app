@@ -417,6 +417,112 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     deleteCurrentLine(true);
   }
 
+  // ---- formatting commands (Ctrl+B/I and the format bar) -----------------
+  // Wrap the active line's selection in an inline marker pair (or insert empty
+  // markers with the caret between); repeating with the same marker toggles off.
+  function wrapInline(m) {
+    if (active < 0 || blockMode || !ta) return;
+    recordHistory('struct');
+    const value = ta.textContent;
+    const { start, end } = getSelectionOffsets(ta);
+    const inner = value.slice(start, end);
+    // Toggle off whether the markers sit just outside the selection or were
+    // swept up inside it (e.g. the whole "**word**" selected).
+    const wrapped = value.slice(start - m.length, start) === m && value.slice(end, end + m.length) === m;
+    const innerWrapped = !wrapped && inner.length >= m.length * 2 && inner.startsWith(m) && inner.endsWith(m);
+    let next, selS, selE;
+    if (wrapped) {
+      next = value.slice(0, start - m.length) + inner + value.slice(end + m.length);
+      selS = start - m.length; selE = end - m.length;
+    } else if (innerWrapped) {
+      next = value.slice(0, start) + inner.slice(m.length, inner.length - m.length) + value.slice(end);
+      selS = start; selE = end - m.length * 2;
+    } else {
+      next = value.slice(0, start) + m + inner + m + value.slice(end);
+      selS = start + m.length; selE = end + m.length;
+    }
+    lines[active] = next;
+    setActiveHtml(ta, next);
+    ta.focus();
+    setSelectionOffsets(ta, selS, selE);
+    lastCaretCol = selE;
+    commit();
+  }
+
+  // Toggle the active line's block marker: h1/h2/h3 replace any current marker
+  // (the same level toggles back to a paragraph); ul/ol/task/quote toggle their
+  // prefix, converting between kinds in place.
+  function setLineMarker(kind) {
+    if (active < 0 || blockMode || !ta) return;
+    recordHistory('struct');
+    const value = ta.textContent;
+    const caret = document.activeElement === ta ? getCaretOffset(ta) : lastCaretCol;
+    const k = lineKind(value);
+    const indent = spaces(k.indent || 0);
+    const body = value.slice(k.markEnd);
+    const H = { h1: 1, h2: 2, h3: 3 }[kind];
+    let next;
+    if (H) next = (k.type === 'heading' && k.level === H) ? body : '#'.repeat(H) + ' ' + body;
+    else if (kind === 'quote') next = k.type === 'quote' ? body : '> ' + value;
+    else if (kind === 'ul')    next = k.type === 'ul'   ? indent + body : indent + '- ' + body;
+    else if (kind === 'ol')    next = k.type === 'ol'   ? indent + body : indent + '1. ' + body;
+    else if (kind === 'task')  next = k.type === 'task' ? indent + body : indent + '- [ ] ' + body;
+    else return;
+    lines[active] = next;
+    renumberListBlock(active);
+    pendingCaret = Math.max(0, Math.min(next.length, caret + (next.length - value.length)));
+    goalX = null; commit(); renderAll(active);
+  }
+
+  // Wrap the selection as [selection](url) with the "url" placeholder selected
+  // (typing replaces it); a collapsed caret gets the empty-label skeleton.
+  function insertLink() {
+    if (active < 0 || blockMode || !ta) return;
+    recordHistory('struct');
+    const value = ta.textContent;
+    const { start, end } = getSelectionOffsets(ta);
+    const inner = value.slice(start, end);
+    const next = value.slice(0, start) + '[' + inner + '](url)' + value.slice(end);
+    lines[active] = next;
+    setActiveHtml(ta, next);
+    ta.focus();
+    const s = start + inner.length + 3; // start of the "url" placeholder
+    setSelectionOffsets(ta, s, s + 3);
+    lastCaretCol = s + 3;
+    commit();
+  }
+
+  // Insert a block construct on its own lines below the active line (replacing
+  // it when it's blank): table → a 2×2 skeleton opened in the cell editor;
+  // codeblock → a fence pair with the caret inside; hr → a "---" line.
+  function insertBlock(kind) {
+    if (active < 0 || blockMode || tedit) return;
+    recordHistory('struct');
+    const blank = !lines[active].trim();
+    const at = blank ? active : active + 1;
+    const remove = blank ? 1 : 0;
+    if (kind === 'hr') {
+      lines.splice(at, remove, '---', '');
+      pendingCaret = 0; goalX = null; commit(); renderAll(at + 1);
+    } else if (kind === 'codeblock') {
+      lines.splice(at, remove, '```', '', '```');
+      pendingCaret = 4; // just past "```\n" — the blank middle line of the region editor
+      goalX = null; commit(); renderAll(at + 1);
+    } else if (kind === 'table') {
+      lines.splice(at, remove, '|  |  |', '| --- | --- |', '|  |  |', '');
+      commit(); renderAll(-1);
+      const reg = regionStartingAt(at);
+      if (reg && reg.type === 'table') openTableEditor(reg, { r: 0, c: 0 });
+    }
+  }
+
+  // The format bar can fire with no line active (fresh load, after Escape):
+  // activate the end of the document first, like clicking below the text.
+  function ensureActive() {
+    if (active < 0 && !tedit) activate(lines.length - 1, Infinity);
+    return active >= 0 && !blockMode && !tedit;
+  }
+
   // ---- smart structure typing (Typora-style) ----------------------------
   // One indent level for nested lists. parseList (markdown.js) nests on any
   // deeper indent, so two spaces is enough and keeps lines compact.
@@ -798,23 +904,7 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     // would otherwise inject <b>/<i> via the native execCommand.
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'b' || e.key === 'i' || e.key === 'B' || e.key === 'I')) {
       e.preventDefault();
-      recordHistory('struct');
-      const m = (e.key === 'b' || e.key === 'B') ? '**' : '*';
-      const inner = value.slice(start, end);
-      const wrapped = value.slice(start - m.length, start) === m && value.slice(end, end + m.length) === m;
-      let next, selS, selE;
-      if (wrapped) {
-        next = value.slice(0, start - m.length) + inner + value.slice(end + m.length);
-        selS = start - m.length; selE = end - m.length;
-      } else {
-        next = value.slice(0, start) + m + inner + m + value.slice(end);
-        selS = start + m.length; selE = end + m.length;
-      }
-      lines[active] = next;
-      setActiveHtml(ta, next);
-      setSelectionOffsets(ta, selS, selE);
-      lastCaretCol = selE;
-      commit();
+      wrapInline((e.key === 'b' || e.key === 'B') ? '**' : '*');
       return;
     }
     // Tab indents / Shift+Tab outdents a list item one level (with ordered
@@ -1513,5 +1603,21 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
       else if (ta) ta.focus();
     },
     isEmptyView() { return active < 0; },
+    // Formatting commands for the toolbar (app.js #format-bar). Each makes sure
+    // a line is active first; block-region/table editors no-op gracefully.
+    format(action) {
+      switch (action) {
+        case 'bold':      if (ensureActive()) wrapInline('**'); break;
+        case 'italic':    if (ensureActive()) wrapInline('*'); break;
+        case 'strike':    if (ensureActive()) wrapInline('~~'); break;
+        case 'code':      if (ensureActive()) wrapInline('`'); break;
+        case 'link':      if (ensureActive()) insertLink(); break;
+        case 'h1': case 'h2': case 'h3':
+        case 'ul': case 'ol': case 'task': case 'quote':
+          if (ensureActive()) setLineMarker(action); break;
+        case 'table': case 'codeblock': case 'hr':
+          if (ensureActive()) insertBlock(action); break;
+      }
+    },
   };
 };

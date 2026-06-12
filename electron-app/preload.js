@@ -36,14 +36,15 @@ contextBridge.exposeInMainWorld('wm', {
   openInSticky: (path, size) => ipcRenderer.send('tab-open-sticky', { path, size }),
 
   // ---- gather windows & stickies ----
-  // How many app windows are open (initial state for the "Gather all windows
-  // and stickies" item) + a subscription that keeps it current as windows
-  // open/close.
+  // How many app windows are open, as { total, normal } (normal = non-sticky;
+  // initial state for the two "Gather…" items) + a subscription that keeps it
+  // current as windows open/close or stickify/restore.
   windowCount:        () => ipcRenderer.invoke('wm-window-count'),
   onWindowCount:      (handler) => ipcRenderer.on('wm-window-count', (_e, n) => handler(n)),
   // Pull every other window's tabs into this one; resolves to the merged paths
-  // to open here (the source windows are saved + closed by main).
-  gatherTabs:         () => ipcRenderer.invoke('tabs:gather'),
+  // to open here (the source windows are saved + closed by main). Pass
+  // { includeStickies: false } to leave post-its alone.
+  gatherTabs:         (opts) => ipcRenderer.invoke('tabs:gather', opts),
   // main → this window during a gather: save dirty tabs and report your paths.
   onCollectTabs:      (handler) => ipcRenderer.on('tabs:collect', (_e, payload) => handler(payload)),
   replyCollectTabs:   (payload) => ipcRenderer.send('tabs:collected', payload),

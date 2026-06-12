@@ -1,3 +1,31 @@
+# Notation v1.2.0
+
+A minimalist local-first Markdown editor with desktop sticky notes. Every note is
+just a `.md` file in a folder you control — no cloud, no account, just text files.
+
+First release with macOS and Windows builds alongside Linux. New since v1.1.1:
+
+## Editor
+- **Inline images** — `![alt](path)` renders in the viewer (relative paths resolve
+  against the note's folder) and carries through to PDF export.
+- **Formatting toolbar** — a minimalist word-editor strip above the note: bold,
+  italic, strikethrough, inline code, link, H1–H3, bullet/numbered/task lists,
+  quote, table, code block and horizontal rule. Centered, always visible in
+  normal windows (hidden only in sticky mode), acting on the live editor.
+
+## Tabs & windows
+- **Pin tabs** — right-click a tab to pin it; pinned tabs group at the left edge
+  of the bar and survive restarts.
+- **Tree follows your tabs** — opening a file or switching tabs reveals and
+  highlights it in the side panel.
+- **Gather all windows** — a gentler sibling of "Gather all windows and
+  stickies": pulls every normal editor window into the current one while leaving
+  post-its floating where they are.
+- **Toggle side panel** — the panel button now only collapses the side panel;
+  the formatting toolbar stays put.
+
+---
+
 # Notation v1.1.1
 
 A minimalist local-first Markdown editor with desktop sticky notes. Every note is

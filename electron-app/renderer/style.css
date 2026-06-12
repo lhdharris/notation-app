@@ -824,3 +824,59 @@ body.sticky-mode.sticky-maximized #sticky-resize { display: none; }
   transition: opacity 0.18s ease, transform 0.18s ease;
 }
 #flash.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---- formatting bar ----------------------------------------------------- */
+/* Minimalist word-editor strip across the top of the viewer. Persistent in
+   normal windows; hidden only in sticky mode, where it would dominate the
+   tiny note. #live / #empty-state are absolutely positioned in #main, so they
+   sit below the bar via a top offset that collapses when the bar is hidden. */
+#format-bar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 34px;
+  padding: 0 12px;
+  background: #fafafa;
+  border-bottom: 1px solid #ececec;
+  user-select: none;
+  overflow: hidden;
+}
+#format-bar button {
+  flex: 0 0 auto;
+  width: 27px;
+  height: 26px;
+  border-radius: 5px;
+  color: #8a8a8a;
+}
+#format-bar button:hover { background: rgba(0, 0, 0, 0.07); color: #333; }
+/* Icons drawn 15% over their natural size (SVGs are authored 15x15). */
+#format-bar button svg { width: 17.25px; height: 17.25px; }
+.fmt-glyph { font-size: 15px; line-height: 1; }
+.fmt-bold   { font-weight: 700; }
+.fmt-italic { font-style: italic; font-weight: 500; }
+.fmt-strike { text-decoration: line-through; font-weight: 500; }
+.fmt-h      { font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em; }
+.fmt-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: #e4e4e4;
+}
+
+#live, #empty-state { top: 34px; }
+body.sticky-mode #format-bar { display: none; }
+body.sticky-mode #live,
+body.sticky-mode #empty-state { top: 0; }
+
+/* ---- pinned tabs --------------------------------------------------------- */
+/* A pinned tab sits in the leftmost group with a small pushpin before its name. */
+.tab-pin {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: #9aa7b0;
+}
+.tab.active .tab-pin { color: #1a5b7a; }

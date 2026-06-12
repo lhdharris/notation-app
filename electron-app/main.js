@@ -341,6 +341,7 @@ ipcMain.handle('wm-sticky-shrink', async (e, size) => {
   if (wasMaximized) win.unmaximize();
   const cur = win.getBounds();
   win._sticky = { originalBounds: cur, stickyBounds: null, wasMaximized };
+  broadcastWindowCount(); // normal-window count changed (this one is a sticky now)
   // Use the note's remembered post-it size when the renderer passed one (#7), else default.
   const w = size && Number.isFinite(size.w) ? size.w : STICKY_W;
   const h = size && Number.isFinite(size.h) ? size.h : STICKY_H;
@@ -409,6 +410,7 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   if (!win || !win._sticky) return;
   const { originalBounds, wasMaximized, stickyBounds } = win._sticky;
   win._sticky = null;
+  broadcastWindowCount(); // normal-window count changed (sticky became an editor again)
   unlockStickySize(win);
   unpinStickyOnTop(win);
   // Back to the opaque editor: paint white BEFORE the grow so the area the
@@ -501,17 +503,22 @@ ipcMain.handle('link:open', (_e, { href, fromPath } = {}) => {
 // decides the outcome from which window (if any) reported adopting it.
 const liveWindows = () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
 
-// Tell every window how many windows are open now. The renderer greys out the
-// tab menu's "Gather all windows and stickies" when this is 1 (nothing to
-// gather). Fired on every open/close; a fresh window also fetches the count
-// itself on boot.
-function broadcastWindowCount() {
+// Tell every window how many windows are open now: total, and how many are
+// normal (non-sticky) editor windows. The renderer greys out the tab menu's
+// gather items when there is nothing to gather — "Gather all windows" needs a
+// second normal window, "…and stickies" any second window. Fired on every
+// open/close; a fresh window also fetches the counts itself on boot.
+function windowCounts() {
   const wins = liveWindows();
-  for (const w of wins) {
-    if (w.webContents && !w.webContents.isDestroyed()) w.webContents.send('wm-window-count', wins.length);
+  return { total: wins.length, normal: wins.filter((w) => !w._sticky).length };
+}
+function broadcastWindowCount() {
+  const counts = windowCounts();
+  for (const w of liveWindows()) {
+    if (w.webContents && !w.webContents.isDestroyed()) w.webContents.send('wm-window-count', counts);
   }
 }
-ipcMain.handle('wm-window-count', () => liveWindows().length);
+ipcMain.handle('wm-window-count', () => windowCounts());
 
 let osTabDrag = null; // { sourceId, path }
 
@@ -578,11 +585,11 @@ ipcMain.on('tab-drag-adopted', () => {
   stopTabDrag();
 });
 
-// ---- gather all windows and stickies --------------------------------------
+// ---- gather windows (with or without stickies) -----------------------------
 // "Bring everything back into one window": every OTHER window — sticky notes
-// included — saves its dirty tabs and hands main its ordered file paths; main
-// returns the merged list to the requesting window (which opens them) and
-// closes the now-drained sources.
+// included unless the renderer asked to spare them — saves its dirty tabs and
+// hands main its ordered file paths; main returns the merged list to the
+// requesting window (which opens them) and closes the now-drained sources.
 let collectSeq = 0;
 function collectTabsFromWindow(win) {
   return new Promise((resolve) => {
@@ -606,10 +613,12 @@ function collectTabsFromWindow(win) {
   });
 }
 
-ipcMain.handle('tabs:gather', async (e) => {
+ipcMain.handle('tabs:gather', async (e, opts) => {
   const target = BrowserWindow.fromWebContents(e.sender);
   if (!target) return [];
-  const sources = liveWindows().filter((w) => w.id !== target.id);
+  // "Gather all windows" (includeStickies false) leaves post-its floating.
+  const includeStickies = !opts || opts.includeStickies !== false;
+  const sources = liveWindows().filter((w) => w.id !== target.id && (includeStickies || !w._sticky));
   const gathered = [];
   for (const w of sources) {
     const paths = await collectTabsFromWindow(w);
@@ -646,7 +655,11 @@ function persistSessionSoon(delay = 500) {
 function windowDescriptor(win) {
   if (win.isDestroyed()) return null;
   const reported = sessionState.get(win.id);
-  const tabs = reported && Array.isArray(reported.tabs) ? reported.tabs.filter(Boolean) : [];
+  const allTabs = reported && Array.isArray(reported.tabs) ? reported.tabs : [];
+  const allPinned = reported && Array.isArray(reported.pinned) ? reported.pinned : [];
+  // Filter empties while keeping each tab's pin flag aligned with its path.
+  const tabs = [], pinned = [];
+  allTabs.forEach((p, i) => { if (p) { tabs.push(p); pinned.push(!!allPinned[i]); } });
   if (!tabs.length) return null;
   const sticky = win._sticky
     ? {
@@ -661,6 +674,7 @@ function windowDescriptor(win) {
     sticky,
     sidebarCollapsed: !!(reported && reported.sidebarCollapsed),
     tabs,
+    pinned,
     activeIndex: reported && Number.isInteger(reported.activeIndex) ? reported.activeIndex : 0,
   };
 }
@@ -700,6 +714,7 @@ ipcMain.on('session:update', (e, payload) => {
   if (!win) return;
   sessionState.set(win.id, {
     tabs: Array.isArray(payload && payload.tabs) ? payload.tabs : [],
+    pinned: Array.isArray(payload && payload.pinned) ? payload.pinned.map(Boolean) : [],
     activeIndex: payload && Number.isInteger(payload.activeIndex) ? payload.activeIndex : 0,
     sidebarCollapsed: !!(payload && payload.sidebarCollapsed),
   });

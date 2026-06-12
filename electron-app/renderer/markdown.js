@@ -45,6 +45,26 @@
     return { links, notes };
   }
 
+  // ---- image path resolution ---------------------------------------------
+  // The page is loaded from file://…/renderer/, so a note's relative image path
+  // would resolve against the app directory and never show. The app sets the
+  // active note's folder here (setMarkdownImageBase) and every rendered <img>
+  // src is resolved against it into an absolute file:// URL. Remote/data/file
+  // srcs pass through untouched; the PDF exporter converts file:// back to a
+  // path when inlining (inlineNoteImages in main.js).
+  let IMG_BASE = null;
+
+  function resolveImageSrc(src) {
+    src = String(src == null ? '' : src).trim();
+    if (!src || /^(?:https?:|data:|file:|\/\/)/i.test(src)) return src;
+    let p = src.replace(/\\/g, '/');
+    if (!/^\//.test(p)) {
+      if (!IMG_BASE) return src;
+      p = IMG_BASE.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + p;
+    }
+    return 'file://' + encodeURI(p).replace(/[?#]/g, encodeURIComponent);
+  }
+
   // ---- inline ----------------------------------------------------------
   function renderInline(text) {
     // Inline math $...$ is lifted out before escaping (KaTeX wants raw TeX) and
@@ -79,10 +99,13 @@
       return ` C${codes.length - 1} `;
     });
 
-    // images, then links (images first so ![..](..) isn't eaten as a link)
-    text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g,
+    // images, then links (images first so ![..](..) isn't eaten as a link).
+    // The path may contain spaces, optionally <>-wrapped (escaped to &lt;/&gt;
+    // by the time this pass runs); resolve it against the active note's folder
+    // so relative images display.
+    text = text.replace(/!\[([^\]]*)\]\(\s*(?:&lt;)?([^)\n]+?)(?:&gt;)?(?:\s+"([^"]*)")?\s*\)/g,
       (_, alt, src, title) =>
-        `<img src="${escapeAttr(src)}" alt="${alt.replace(/"/g, '&quot;')}"` +
+        `<img src="${escapeAttr(resolveImageSrc(src))}" alt="${alt.replace(/"/g, '&quot;')}"` +
         `${title ? ` title="${escapeAttr(title)}"` : ''}>`);
     text = text.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g,
       (_, label, href, title) =>
@@ -479,6 +502,8 @@
 
   window.renderMarkdown = renderMarkdown;
   window.highlightInline = highlightInline;
+  // The folder of the active note: relative image paths resolve against it.
+  window.setMarkdownImageBase = (dir) => { IMG_BASE = dir || null; };
   // Table region model helpers for the live editor's WYSIWYG cell editing.
   window.parseTableRegion = parseTableRegion;
   window.serializeTableRegion = serializeTableRegion;

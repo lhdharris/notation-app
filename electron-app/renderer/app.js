@@ -19,7 +19,7 @@ let activeTabId = null;
 let tabSeq = 0;
 let activeRow = null;
 let saveTimer = null;
-let windowCount = 1;      // # of app windows open, for the "Gather all windows and stickies" item
+let windowCounts = { total: 1, normal: 1 }; // open app windows (normal = non-sticky), for the "Gather…" items
 
 const nextId = () => ++tabSeq;
 const activeTab = () => tabs.find((t) => t.id === activeTabId) || null;
@@ -81,6 +81,9 @@ const extOf = (name) => { const i = name.lastIndexOf('.'); return i > 0 ? name.s
 const isExternalFile = (entry) => !entry.isDir && EXTERNAL_EXT.has(extOf(entry.name));
 const TAB_CLOSE_SVG =
   '<svg width="9" height="9" viewBox="0 0 8 8" aria-hidden="true"><line x1="1" y1="1" x2="7" y2="7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="7" y1="1" x2="1" y2="7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+// Small pushpin shown on a pinned tab, before its name.
+const TAB_PIN_SVG =
+  '<svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.2 2.2 L13.8 6.8 L12.6 8 L11.9 7.8 L9.4 10.3 L9.2 13 L8 14.2 L5.3 11.5 L2.6 14.2 L1.8 13.4 L4.5 10.7 L1.8 8 L3 6.8 L5.7 6.6 L8.2 4.1 L8 3.4 Z" fill="currentColor"/></svg>';
 
 // ---- workspace tree -----------------------------------------------------
 async function loadWorkspaces() {
@@ -333,14 +336,53 @@ function setActiveRow(row) {
   if (activeRow) activeRow.classList.add('active');
 }
 
+// Expand the tree down to a file's folder and scroll its row into view, so
+// opening or switching to a tab always shows where the note lives. Suppressed
+// during session restore (booting) so launch doesn't unfold every open tab's
+// folder; boot reveals just the final active tab afterwards.
+let booting = false;
+async function revealInTree(filePath) {
+  if (booting || !filePath) return;
+  let root = null;
+  for (const n of tree.children) {
+    const p = n._path;
+    if (p && (filePath === p || filePath.startsWith(p + '/'))) { root = p; break; }
+  }
+  if (!root) return; // not under any linked workspace
+  // Ancestor directories, root first; expand each (lazy-loading as needed).
+  const dirs = [root];
+  const segs = filePath.slice(root.length + 1).split('/');
+  segs.pop(); // the filename itself
+  let cur = root;
+  for (const seg of segs) { cur += '/' + seg; dirs.push(cur); }
+  for (const d of dirs) {
+    const node = findNodeByPath(d);
+    if (!node || !node._isDir) return;
+    if (node._children.hidden) await toggleDir(node);
+  }
+  const row = findRowByPath(filePath);
+  if (row) {
+    setActiveRow(row);
+    row.scrollIntoView({ block: 'nearest' });
+  }
+}
+
 // ---- tabs ---------------------------------------------------------------
 function renderTabs() {
   tabBar.innerHTML = '';
   for (const tab of tabs) {
     const el = document.createElement('div');
-    el.className = 'tab' + (tab.id === activeTabId ? ' active' : '') + (tab.dirty ? ' dirty' : '');
+    el.className = 'tab' + (tab.id === activeTabId ? ' active' : '') + (tab.dirty ? ' dirty' : '')
+      + (tab.pinned ? ' pinned' : '');
     el.dataset.id = String(tab.id);
     el.title = tab.path || tab.name;
+
+    if (tab.pinned) {
+      const pin = document.createElement('span');
+      pin.className = 'tab-pin';
+      pin.innerHTML = TAB_PIN_SVG;
+      el.append(pin);
+    }
 
     const name = document.createElement('span');
     name.className = 'tab-name';
@@ -366,9 +408,12 @@ function renderTabs() {
       e.preventDefault();
       e.stopPropagation();
       showContextMenu(e.clientX, e.clientY, [
+        { label: tab.pinned ? 'Unpin' : 'Pin', action: () => (tab.pinned ? unpinTab(tab) : pinTab(tab)) },
+        { sep: true },
         { label: 'Move to new window', action: () => moveTabToNewWindow(tab) },
         { label: 'Move to sticky note', action: () => moveTabToSticky(tab) },
-        { label: 'Gather all windows and stickies', disabled: windowCount < 2, action: gatherOpenTabs },
+        { label: 'Gather all windows', disabled: windowCounts.normal < 2, action: () => gatherOpenTabs(false) },
+        { label: 'Gather all windows and stickies', disabled: windowCounts.total < 2, action: () => gatherOpenTabs(true) },
         { sep: true },
         { label: 'Close', action: () => closeTab(tab) },
         { label: 'Close others', action: () => closeOtherTabs(tab) },
@@ -392,6 +437,33 @@ function updateTabOverflow() {
 tabBar.addEventListener('scroll', updateTabOverflow);
 window.addEventListener('resize', updateTabOverflow);
 
+// Pinned tabs live as a contiguous group at the left edge of the bar. Pinning
+// moves the tab to the end of that group; unpinning drops it just after the
+// group. Drag-reordering can't cross the boundary (see reorderTo).
+const pinnedCount = () => tabs.filter((t) => t.pinned).length;
+
+function pinTab(tab) {
+  if (tab.pinned) return;
+  const from = tabs.indexOf(tab);
+  if (from < 0) return;
+  tabs.splice(from, 1);
+  tab.pinned = true;
+  // tab itself is out of the array here, so pinnedCount() = the other pinned
+  // tabs — exactly the index at the end of the pinned group.
+  tabs.splice(pinnedCount(), 0, tab);
+  renderTabs();
+}
+
+function unpinTab(tab) {
+  if (!tab.pinned) return;
+  const from = tabs.indexOf(tab);
+  if (from < 0) return;
+  tabs.splice(from, 1);
+  tab.pinned = false;
+  tabs.splice(pinnedCount(), 0, tab); // first unpinned slot
+  renderTabs();
+}
+
 function setTabDirty(tab, v) {
   tab.dirty = v;
   const el = tabBar.querySelector(`.tab[data-id="${tab.id}"]`);
@@ -412,9 +484,11 @@ async function activateTab(tab) {
   activeTabId = tab.id;
   liveEl.hidden = false;
   emptyState.style.display = 'none';
+  window.setMarkdownImageBase(tab.path ? parentDir(tab.path) : null); // relative images resolve per note
   editor.load(tab.doc, tab.state);
   renderTabs();
   setActiveRow(tab._row && tab._row.isConnected ? tab._row : findRowByPath(tab.path));
+  revealInTree(tab.path);
   if (document.body.classList.contains('sticky-mode')) { updateStickyTitle(); refreshStickyColor(); }
 }
 
@@ -430,15 +504,17 @@ async function openFile(filePath, row) {
     return;
   }
   if (activeTab()) { await flushSave(); commitActive(); }
-  const tab = { id: nextId(), path: filePath, name: baseName(filePath), dirty: false, doc: res.content, state: null, _row: row || null };
+  const tab = { id: nextId(), path: filePath, name: baseName(filePath), dirty: false, pinned: false, doc: res.content, state: null, _row: row || null };
   tabs.push(tab);
   api.watchFile(filePath); // pick up external edits to this note
   activeTabId = tab.id;
   liveEl.hidden = false;
   emptyState.style.display = 'none';
+  window.setMarkdownImageBase(parentDir(filePath)); // relative images resolve per note
   editor.load(tab.doc, null);
   renderTabs();
   setActiveRow(row || findRowByPath(filePath));
+  revealInTree(filePath);
   if (document.body.classList.contains('sticky-mode')) { updateStickyTitle(); refreshStickyColor(); }
 }
 
@@ -466,6 +542,7 @@ function showEmpty() {
   activeTabId = null;
   liveEl.hidden = true;
   emptyState.style.display = '';
+  window.setMarkdownImageBase(null);
   editor.load('');
   setActiveRow(null);
   renderTabs();
@@ -504,6 +581,7 @@ function reportSession() {
     const withPath = tabs.filter((t) => t.path);
     wm.session.update({
       tabs: withPath.map((t) => t.path),
+      pinned: withPath.map((t) => !!t.pinned),
       activeIndex: Math.max(0, withPath.findIndex((t) => t.id === activeTabId)),
       sidebarCollapsed: document.body.classList.contains('sidebar-collapsed'),
     });
@@ -615,6 +693,10 @@ function reorderTo(index) {
   if (from < 0) return;
   let to = index > from ? index - 1 : index;   // removing src shifts indices left
   to = Math.max(0, Math.min(to, tabs.length - 1));
+  // Keep the pinned group intact: a pinned tab reorders within it, an unpinned
+  // tab can't drop into it. (The group size doesn't count src once removed.)
+  const pinnedOthers = tabs.filter((t) => t.pinned && t !== src.tab).length;
+  to = src.tab.pinned ? Math.min(to, pinnedOthers) : Math.max(to, pinnedOthers);
   if (to === from) return;
   tabs.splice(from, 1);
   tabs.splice(to, 0, src.tab);
@@ -685,12 +767,13 @@ async function closeOtherTabs(keep) {
 // ---- gather open tabs ---------------------------------------------------
 // Pull every other window's tabs into this one. Main saves + closes the other
 // windows and hands back their file paths in order; we open each here (already-
-// open files just re-activate, so duplicates collapse).
-async function gatherOpenTabs() {
-  if (windowCount < 2) return;
+// open files just re-activate, so duplicates collapse). With includeStickies
+// false, post-it notes are left floating where they are.
+async function gatherOpenTabs(includeStickies = true) {
+  if ((includeStickies ? windowCounts.total : windowCounts.normal) < 2) return;
   if (activeTab()) { await flushSave(); commitActive(); }
   let paths = [];
-  try { paths = await wm.gatherTabs(); } catch { return; }
+  try { paths = await wm.gatherTabs({ includeStickies }); } catch { return; }
   for (const p of paths) await openFile(p, findRowByPath(p));
 }
 
@@ -704,9 +787,11 @@ wm.onCollectTabs(async ({ token }) => {
   wm.replyCollectTabs({ token, paths: tabs.map((t) => t.path).filter(Boolean) });
 });
 
-// Keep windowCount current so the menu item enables/greys out as windows change.
-wm.onWindowCount((n) => { if (Number.isInteger(n)) windowCount = n; });
-wm.windowCount().then((n) => { if (Number.isInteger(n)) windowCount = n; }).catch(() => {});
+// Keep windowCounts current so the gather items enable/grey out as windows
+// open, close, stickify or restore.
+const setWindowCounts = (n) => { if (n && Number.isInteger(n.total) && Number.isInteger(n.normal)) windowCounts = n; };
+wm.onWindowCount(setWindowCounts);
+wm.windowCount().then(setWindowCounts).catch(() => {});
 
 // ---- window controls ----------------------------------------------------
 document.getElementById('close').addEventListener('click', () => wm.close());
@@ -721,6 +806,18 @@ document.getElementById('toolbar').addEventListener('dblclick', (e) => {
 document.getElementById('sidebar-toggle').addEventListener('click', () => {
   document.body.classList.toggle('sidebar-collapsed');
   reportSession();
+});
+
+// ---- formatting bar -------------------------------------------------------
+// One delegated listener; mousedown is swallowed so the editor's focus and
+// selection survive the button press, then click runs the editor command.
+const formatBar = document.getElementById('format-bar');
+formatBar.addEventListener('mousedown', (e) => e.preventDefault());
+formatBar.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  if (!activeTab()) { flash('Open a note to format.'); return; }
+  editor.format(btn.dataset.action);
 });
 document.getElementById('add-workspace').addEventListener('click', addWorkspace);
 document.getElementById('new-file').addEventListener('click', newFile);
@@ -1337,10 +1434,16 @@ function initialFileFromHash() {
 async function boot() {
   await loadWorkspaces();
   let restored = false;
+  booting = true; // don't unfold the tree for every restored tab
   try {
     const r = await wm.session.getRestore();
     if (r && Array.isArray(r.tabs) && r.tabs.length) {
       for (const p of r.tabs) await openFile(p, findRowByPath(p));
+      // Re-apply saved pin state (paths-with-tabs order matches r.tabs order).
+      if (Array.isArray(r.pinned)) {
+        tabs.forEach((t, i) => { t.pinned = !!r.pinned[i]; });
+        renderTabs();
+      }
       if (tabs.length) {
         const idx = Number.isInteger(r.activeIndex) ? r.activeIndex : 0;
         const target = tabs[idx] || tabs[tabs.length - 1];
@@ -1351,9 +1454,13 @@ async function boot() {
       if (r.sticky) { document.body.classList.add('sticky-mode'); updateStickyTitle(); refreshStickyColor(); }
     }
   } catch {}
+  booting = false;
   if (!restored) {
     const f = initialFileFromHash();
     if (f) await openFile(f, findRowByPath(f));
+  } else {
+    const t = activeTab();
+    if (t) revealInTree(t.path); // show just the active note's folder
   }
 }
 boot();
