@@ -22,7 +22,8 @@ already be present locally — verify rather than assume (step 1).
 
 ```bash
 cd <this folder>           # the synced notation-app repo root
-git log --oneline -1       # must be the "Notation v1.2.1" commit
+git log --oneline -1       # must be the greyscale-icon commit ("Greyscale
+                           # gradient icon background…"), AFTER "Notation v1.2.1"
 grep '"version"' electron-app/package.json   # must say 1.2.1
 git status --short         # should be clean (untracked dist/ files are fine)
 ```
@@ -62,9 +63,10 @@ Notes:
   and rerun.
 - Smoke-test the mac build before uploading: `open "dist/Notation-1.2.1-arm64.dmg"`
   (or the x64 one on an Intel Mac), drag-launch the app, open a `.md` file,
-  confirm the editor renders and the Dock shows the **new pastel sticky-notes
-  icon** (not the old grey document). Gatekeeper will warn because it's
-  unsigned — right-click → Open.
+  confirm the editor renders and the Dock shows the **pastel sticky-notes icon
+  on a light grey-to-white gradient** (not the old grey document, and not a
+  dark background — dark means you built a stale commit). Gatekeeper will warn
+  because it's unsigned — right-click → Open.
 
 ## 4. Upload to the existing GitHub release
 
