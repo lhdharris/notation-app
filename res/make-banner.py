@@ -50,8 +50,8 @@ strip = ''.join(
 
 # The app icon, inlined straight from the source SVG (its ids are ni-prefixed
 # so they can't clash with the banner's), scaled into a tile on the left. The
-# tile's dark background nearly matches the banner's, so the fanned notes read
-# as floating; a hairline stroke keeps the rounded square legible.
+# tile's light-slate background stands out against the dark banner; a hairline
+# stroke keeps the rounded square's edge crisp.
 import re  # noqa: E402
 
 ICON_SVG = os.path.join(RES, '..', 'electron-app', 'renderer', 'notation-icon.svg')

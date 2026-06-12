@@ -8,7 +8,7 @@ everything new since v1.1.1.)
 
 ## Design
 - **Redesigned app icon** — a fanned stack of pastel sticky notes (the app's own
-  post-it palette) on dark slate, replacing the plain grey document. Carried
+  post-it palette) on light slate, replacing the plain grey document. Carried
   through to all platform icons, the window/taskbar icon, the README banner and
   the in-app empty state.
 
