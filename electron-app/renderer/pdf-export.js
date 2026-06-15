@@ -7,7 +7,7 @@
 // carries through verbatim.
 //
 // The page chrome mirrors res/projector-app's exporter — a system-ui document
-// with a bold title, a grey "Generated …" subtitle, a thin rule, and per-page
+// with a bold title, a grey date subtitle, a thin rule, and per-page
 // numbers stamped by main's footer template — but with NO repo/attribution.
 // The body styles are a print-tuned port of style.css's `.markdown-body`.
 
@@ -103,7 +103,7 @@
     // extraCss: vendored stylesheet text inlined verbatim (e.g. KaTeX's css
     // when the note contains math) — the document must stay self-contained.
     const extra = opts.extraCss ? `<style>${opts.extraCss}</style>` : '';
-    const sub = `Generated ${fmtDate(opts.dateISO)}`;
+    const sub = fmtDate(opts.dateISO);
     return '<!doctype html><html><head><meta charset="utf-8">'
       + `<title>${esc(title)}</title>`
       + `<style>${styles()}</style>${extra}</head><body>`

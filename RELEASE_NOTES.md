@@ -1,3 +1,49 @@
+# Notation v1.2.2
+
+A minimalist local-first Markdown editor with desktop sticky notes. Every note is
+just a `.md` file in a folder you control — no cloud, no account, just text files.
+
+## Updates & OS integration
+- **In-app updater** — Notation now checks for new releases every 4 hours. A small
+  banner in the bottom-right corner offers "Update" (downloads the right installer for
+  your platform and opens it), "Skip this version", or dismiss. No auto-install:
+  you stay in control.
+- **Open files from outside your workspace** — double-clicking a `.md` file in Finder
+  (or any OS "Open with") now opens it as a tab in Notation, even if it lives outside
+  your current workspace folder. A second launch naming a file routes it into the
+  running app instead of opening a duplicate window.
+
+## Sticky notes
+- **Crossfade restore** — leaving sticky mode now fades out smoothly instead of
+  cutting straight to the normal editor.
+- **Double-click the title bar to restore** — on all platforms. (Previously worked on
+  Linux only; macOS and Windows intercept the gesture at the system level; now handled.)
+- **Right-click the sticky title bar** for a "New Window" shortcut.
+- **Scroll and arrow-key fixes** — the caret no longer hides under the sticky title
+  bar; ↑/↓ through wrapped lines no longer stalls when the target row is off-screen.
+
+## Tabs & pinning
+- **Pins sync across all open windows** — pinned notes are now app-global. Every window
+  stays in sync: pinning in one window pins it everywhere; unpinning, trashing, or
+  renaming a note updates the pin list for the whole app.
+- **Pin order is preserved** — reordering tabs in the pinned block propagates to all
+  windows.
+
+## Editor
+- **Insert footnote** — a new formatting toolbar action drops a `[^N]` reference at the
+  caret and appends a matching `[^N]:` definition at the foot of the document, ready to
+  type.
+- **Arrow keys cross line boundaries** — ← at a line's start moves to the end of the
+  previous line; → at a line's end moves to the start of the next.
+- **Type or Enter over a multi-line selection** — selecting across lines and typing
+  replaces the selection; Enter splits it. Previously only Backspace/Delete worked.
+- **Delete table** — Backspace from the line after a table, Delete from the line
+  before, or the new "Delete table" context-menu item all remove a table cleanly.
+- **Context menu dismissal fix** — clicking in the note body now correctly dismisses
+  any open context menu.
+
+---
+
 # Notation v1.2.1
 
 A minimalist local-first Markdown editor with desktop sticky notes. Every note is
@@ -50,7 +96,7 @@ just a `.md` file in a folder you control — no cloud, no account, just text fi
 
 The first published release. Highlights since the 1.0.0 build:
 
-## Live editor (Typora-style)
+## Live editor
 - **Line-by-line live rendering** — the line under the caret shows its raw Markdown,
   everything else renders in place. Headings, lists, quotes, links, emphasis.
 - **In-place table editing** — edit cell-by-cell, Tab/Enter navigation, add rows and

@@ -226,6 +226,13 @@ body.sidebar-collapsed #sidebar {
   flex-basis: 0;
   border-right: none;
 }
+/* Freeze the width of the children that would otherwise reflow, so collapsing
+   (flex-basis → 0) just clips and slides them away under #sidebar's
+   overflow:hidden — the empty-state hint re-wrapped and jumped as the column
+   narrowed. The head's flex row gets the same treatment; #tree is left alone
+   (its rows are white-space:nowrap and it owns overflow-y, so pinning its
+   width would only risk a stray 1px horizontal scrollbar). */
+#sidebar-head, #sidebar-hint { width: 312px; }
 
 #sidebar-head {
   display: flex;
@@ -336,7 +343,7 @@ body.sidebar-collapsed #sidebar {
   position: relative;
 }
 
-/* live-preview surface — one element per source line (Typora-style). Each source
+/* live-preview surface — one element per source line. Each source
    line is its own .ln: inactive lines show the rendered look (window.renderInline);
    the single active line shows its raw markdown with markers dimmed (window.
    highlightInline). Every .ln's height is fixed by its block class regardless of
@@ -351,6 +358,8 @@ body.sidebar-collapsed #sidebar {
 
 .ln {
   max-width: 860px;
+  margin-left: auto;   /* centre the writing column in the viewer */
+  margin-right: auto;
   line-height: 1.65;
   color: #2a2a2a;
   white-space: pre-wrap;
@@ -364,7 +373,9 @@ body.sidebar-collapsed #sidebar {
 /* headings (same sizing active or inactive — the only change on activate is the
    revealed leading "#", which never alters the line's height) */
 .ln-h1, .ln-h2, .ln-h3, .ln-h4, .ln-h5, .ln-h6 {
-  font-weight: 600; line-height: 1.3; margin: 0.47em 0 0.5em;
+  /* auto keeps the heading inside the centred column (this rule outranks .ln's
+     side margins, so a plain `0` here would pull headings back to the left) */
+  font-weight: 600; line-height: 1.3; margin: 0.47em auto 0.5em;
 }
 .ln-h1 { font-size: 1.9em; }
 .ln-h2 { font-size: 1.5em; }
@@ -404,7 +415,10 @@ body.sidebar-collapsed #sidebar {
 
 /* inline content — applies to both the rendered (inactive) and active forms via the
    shared .markdown-body class each .ln carries */
-.ln strong { font-weight: 600; }
+/* Varela Round ships a single 400 weight, so a font-weight bold would be
+   browser-synthesized (double-painted) faux bold — visibly smudged on this
+   rounded face. A thin vector stroke fattens the glyphs crisply instead. */
+.ln strong { font-weight: 400; -webkit-text-stroke: 0.4px currentColor; }
 .ln em { font-style: italic; }
 .ln del { color: #999; }
 .ln a, .ln .le-link { color: #1a73c0; text-decoration: none; cursor: pointer; }
@@ -428,13 +442,13 @@ body.sidebar-collapsed #sidebar {
 
 /* block region (fenced code / mermaid-gantt / GFM table): rendered whole when
    inactive (window.renderMarkdown), edited as one raw <textarea> when clicked. */
-.ln-region { max-width: 860px; }
+.ln-region { max-width: 860px; margin-left: auto; margin-right: auto; }
 .ln-region-edit {
   display: block; width: 100%; max-width: 860px; resize: none;
   border: 1px solid #ececec; outline: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.85em; line-height: 1.5; color: #2a2a2a; background: #f6f8fa;
-  border-radius: 8px; padding: 12px 14px; margin: 0.8em 0;
+  border-radius: 8px; padding: 12px 14px; margin: 0.8em auto;
   white-space: pre; word-break: normal; overflow-x: auto; overflow-y: hidden; tab-size: 2;
 }
 body.sticky-mode .ln-region-edit { max-width: none; }
@@ -481,7 +495,8 @@ body.sticky-mode .ln-region-edit { max-width: none; }
 }
 .markdown-body a { color: #1a73c0; text-decoration: none; cursor: pointer; }
 .markdown-body a:hover { text-decoration: underline; }
-.markdown-body strong { font-weight: 600; }
+/* stroke-bold, not faux bold — see .ln strong */
+.markdown-body strong { font-weight: 400; -webkit-text-stroke: 0.4px currentColor; }
 .markdown-body del { color: #999; }
 .markdown-body ul, .markdown-body ol { margin: 0.6em 0; padding-left: 1.6em; }
 .markdown-body li { margin: 0.2em 0; }
@@ -569,7 +584,9 @@ body.sticky-mode #app::after {
 }
 body.sticky-mode #main { background: transparent; }
 body.sticky-mode #live {
-  padding: 36px 15px 14px;
+  /* Top clears the fixed #sticky-title bar; the roomier bottom lets the last lines
+     scroll clear of the post-it's rounded corner instead of jamming the edge. */
+  padding: 36px 15px 26px;
   font-size: 15px;
 }
 /* Hide the scrollbar on a post-it (scrolling still works — by request). */
@@ -693,6 +710,20 @@ body.sticky-mode.sticky-maximized #sticky-title {
   border-radius: 0;
 }
 body.sticky-mode.sticky-maximized #sticky-resize { display: none; }
+
+/* Restore-from-sticky crossfade: after the window grows back to its editor
+   footprint (sticky chrome stretched along), this full-window cover in the
+   note colour drops over everything, the normal chrome renders beneath it,
+   and the cover fades out (app.js exitSticky). */
+#sticky-fade {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+#sticky-fade.out { opacity: 0; }
 
 /* ---- drop hint (a tab from another window is hovering over us) --------- */
 #tab-drop-hint {
@@ -824,6 +855,50 @@ body.sticky-mode.sticky-maximized #sticky-resize { display: none; }
   transition: opacity 0.18s ease, transform 0.18s ease;
 }
 #flash.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---- update banner ----------------------------------------------------- */
+/* Non-modal bottom-right card: a newer GitHub release is available. */
+#update-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #d8d8d8;
+  border-radius: 10px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.16);
+  font-size: 14px;
+  color: #333;
+}
+body.sticky-mode #update-banner { display: none; }
+#update-banner .update-go {
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: #1a73c0;
+  color: #fff;
+  font-size: 14px;
+}
+#update-banner .update-go:hover { background: #1665ad; }
+#update-banner .update-go:disabled { background: #cfd8e0; cursor: default; }
+#update-banner .update-skip {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: none;
+  color: #777;
+  font-size: 13px;
+}
+#update-banner .update-skip:hover { background: rgba(0, 0, 0, 0.06); color: #444; }
+#update-banner .update-close {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: #999;
+}
+#update-banner .update-close:hover { background: rgba(0, 0, 0, 0.07); color: #333; }
 
 /* ---- formatting bar ----------------------------------------------------- */
 /* Minimalist word-editor strip across the top of the viewer. Persistent in

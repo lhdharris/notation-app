@@ -440,10 +440,14 @@ window.addEventListener('resize', updateTabOverflow);
 // Pinned tabs live as a contiguous group at the left edge of the bar. Pinning
 // moves the tab to the end of that group; unpinning drops it just after the
 // group. Drag-reordering can't cross the boundary (see reorderTo).
+//
+// Pins are app-GLOBAL: main owns one ordered list (config.json) that every
+// window mirrors. pin/unpin apply locally first, then tell main; main
+// re-broadcasts the full list and every window reconciles in applyGlobalPins.
 const pinnedCount = () => tabs.filter((t) => t.pinned).length;
 
 function pinTab(tab) {
-  if (tab.pinned) return;
+  if (tab.pinned || !tab.path) return;
   const from = tabs.indexOf(tab);
   if (from < 0) return;
   tabs.splice(from, 1);
@@ -452,6 +456,7 @@ function pinTab(tab) {
   // tabs — exactly the index at the end of the pinned group.
   tabs.splice(pinnedCount(), 0, tab);
   renderTabs();
+  wm.pins.add(tab.path);
 }
 
 function unpinTab(tab) {
@@ -462,7 +467,52 @@ function unpinTab(tab) {
   tab.pinned = false;
   tabs.splice(pinnedCount(), 0, tab); // first unpinned slot
   renderTabs();
+  // Local unpin FIRST, then tell main: when the broadcast comes back this tab
+  // is already unpinned here, so the reconciler leaves it as a normal tab in
+  // this window while every other window closes its copy.
+  if (tab.path) wm.pins.remove(tab.path);
 }
+
+// Reconcile this window's tabs with the global pin list. Idempotent and
+// serialized (boot + every pins:changed broadcast funnel through one chain so
+// two broadcasts can't interleave their async opens).
+let pinsApplying = Promise.resolve();
+const warnedMissingPins = new Set();
+function applyGlobalPins(list) {
+  const pinned = Array.isArray(list) ? list.filter((p) => typeof p === 'string' && p) : [];
+  pinsApplying = pinsApplying.then(() => reconcileGlobalPins(pinned)).catch(() => {});
+  return pinsApplying;
+}
+
+async function reconcileGlobalPins(list) {
+  // A tab still flagged pinned here but gone from the list was unpinned in
+  // another window — it lives on there as a normal tab; close our copy.
+  for (const t of tabs.slice()) {
+    if (t.pinned && t.path && !list.includes(t.path)) await closeTab(t);
+  }
+  // Make sure every globally-pinned note is open here and flagged.
+  for (const p of list) {
+    let t = tabs.find((x) => x.path === p);
+    if (!t) {
+      t = await openFile(p, findRowByPath(p), { activate: false });
+      if (!t) {
+        if (!warnedMissingPins.has(p)) {
+          warnedMissingPins.add(p);
+          flash('Pinned note missing: ' + baseName(p));
+        }
+        continue;
+      }
+    }
+    t.pinned = true;
+  }
+  // Order: the pinned block in global order, then everything else as-is.
+  const pinnedBlock = list.map((p) => tabs.find((t) => t.path === p)).filter(Boolean);
+  const rest = tabs.filter((t) => !pinnedBlock.includes(t));
+  tabs = [...pinnedBlock, ...rest];
+  renderTabs();
+}
+
+wm.pins.onChanged(({ pinned }) => applyGlobalPins(pinned));
 
 function setTabDirty(tab, v) {
   tab.dirty = v;
@@ -492,19 +542,31 @@ async function activateTab(tab) {
   if (document.body.classList.contains('sticky-mode')) { updateStickyTitle(); refreshStickyColor(); }
 }
 
-async function openFile(filePath, row) {
+// Open a file as a tab. `opts.activate: false` opens it in the background
+// (used by the global-pin merge, which must never steal focus from the note
+// being edited): the tab is added and watched but the editor stays put.
+// Resolves to the tab, or null when the file couldn't be read.
+async function openFile(filePath, row, opts = {}) {
+  const activate = opts.activate !== false;
   const existing = tabs.find((t) => t.path === filePath);
-  if (existing) { if (row) existing._row = row; await activateTab(existing); return; }
+  if (existing) { if (row) existing._row = row; if (activate) await activateTab(existing); return existing; }
   const res = await api.readFile(filePath);
   if (res.error) {
+    if (!activate) return null; // background open: the caller handles the miss
     // Can't load it as text — reveal a binary file in the OS file manager rather
     // than just failing (#3); other errors (permission, gone) still flash.
     if (res.error === 'binary') api.reveal(filePath);
     else flash('Could not open file.');
-    return;
+    return null;
+  }
+  const tab = { id: nextId(), path: filePath, name: baseName(filePath), dirty: false, pinned: false, doc: res.content, state: null, _row: row || null };
+  if (!activate) {
+    tabs.push(tab);
+    api.watchFile(filePath);
+    renderTabs();
+    return tab;
   }
   if (activeTab()) { await flushSave(); commitActive(); }
-  const tab = { id: nextId(), path: filePath, name: baseName(filePath), dirty: false, pinned: false, doc: res.content, state: null, _row: row || null };
   tabs.push(tab);
   api.watchFile(filePath); // pick up external edits to this note
   activeTabId = tab.id;
@@ -516,6 +578,7 @@ async function openFile(filePath, row) {
   setActiveRow(row || findRowByPath(filePath));
   revealInTree(filePath);
   if (document.body.classList.contains('sticky-mode')) { updateStickyTitle(); refreshStickyColor(); }
+  return tab;
 }
 
 async function closeTab(tab, skipSave = false) {
@@ -701,6 +764,8 @@ function reorderTo(index) {
   tabs.splice(from, 1);
   tabs.splice(to, 0, src.tab);
   renderTabs();
+  // Reordering within the pinned block is global state — share the new order.
+  if (src.tab.pinned) wm.pins.reorder(tabs.filter((t) => t.pinned && t.path).map((t) => t.path));
 }
 
 async function adoptDraggedTab(p) {
@@ -935,18 +1000,52 @@ async function enterSticky() {
   reportSession();
 }
 
+// Leave sticky mode: grow back to the normal-window footprint first (main
+// animates the bounds while the post-it chrome stretches with it), then
+// crossfade the chrome — a full-window cover in the note colour drops over the
+// window, the normal editor renders beneath it, and the cover fades out.
+// Shared by the restore button, the title-bar dblclick (Linux delivers it to
+// the DOM) and main's sticky:restore-request (mac/win, where the system
+// swallows the dblclick and zooms the window instead).
+let stickyExitInFlight = false;
 async function exitSticky() {
-  document.body.classList.remove('sticky-mode');
+  if (stickyExitInFlight || !document.body.classList.contains('sticky-mode')) return;
+  stickyExitInFlight = true;
   // Clear directly too: main's unmaximize during the restore fires after
   // _sticky is nulled, so no sticky-max-state event will arrive for it.
   document.body.classList.remove('sticky-maximized');
-  await wm.restoreFromSticky();
-  reportSession();
+  try {
+    await wm.restoreFromSticky();
+    const fade = document.createElement('div');
+    fade.id = 'sticky-fade';
+    fade.style.background =
+      getComputedStyle(document.body).getPropertyValue('--sticky-bg').trim() || DEFAULT_STICKY_COLOR;
+    document.body.append(fade);
+    document.body.classList.remove('sticky-mode');
+    // Two frames so the cover paints at full opacity before the fade starts.
+    requestAnimationFrame(() => requestAnimationFrame(() => fade.classList.add('out')));
+    fade.addEventListener('transitionend', () => fade.remove(), { once: true });
+    setTimeout(() => fade.remove(), 600); // safety net if transitionend is dropped
+    reportSession();
+  } finally {
+    stickyExitInFlight = false;
+  }
 }
 
 document.getElementById('sticky').addEventListener('click', enterSticky);
 document.getElementById('sticky-restore').addEventListener('click', exitSticky);
 document.getElementById('sticky-x').addEventListener('click', () => wm.close());
+// Double-click on the title strip restores to a normal window (Linux path —
+// on mac/win the system intercepts the gesture; see onStickyRestoreRequest).
+stickyTitle.addEventListener('dblclick', (e) => { e.preventDefault(); exitSticky(); });
+wm.onStickyRestoreRequest(() => exitSticky());
+// Right-click on the title strip: window actions for a chrome-less post-it.
+stickyTitle.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  showContextMenu(e.clientX, e.clientY, [
+    { label: 'New Window', action: () => wm.openInNewWindow(null) },
+  ]);
+});
 if (stickyColorBtn) stickyColorBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleStickyPalette(); });
 document.addEventListener('click', (e) => {
   if (stickyPalette && !stickyPalette.contains(e.target) && !(stickyColorBtn && stickyColorBtn.contains(e.target))) hideStickyPalette();
@@ -1074,9 +1173,18 @@ function showContextMenu(x, y, items) {
   ctxMenu.style.top = Math.max(4, py) + 'px';
 }
 
-document.addEventListener('click', (e) => {
+// Dismiss on any press outside the menu. Capture-phase pointerdown — not
+// click: the editor's mousedown handler calls preventDefault() (live-editor.js
+// drives selection itself), which suppresses the click event entirely, so a
+// click-based dismisser never fired for presses in the note body. A menu
+// item's own click still lands (the menu contains the target). A right-click
+// outside likewise dismisses (or is immediately replaced by the new menu).
+document.addEventListener('pointerdown', (e) => {
   if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) hideContextMenu();
-});
+}, true);
+document.addEventListener('contextmenu', (e) => {
+  if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) hideContextMenu();
+}, true);
 window.addEventListener('blur', hideContextMenu);
 
 document.getElementById('sidebar').addEventListener('contextmenu', (e) => {
@@ -1169,6 +1277,7 @@ function applyPathMove(oldPath, newPath) {
     if (!np) continue;
     api.unwatchFile(tab.path);
     api.watchFile(np);
+    if (tab.pinned) wm.pins.rename(tab.path, np); // keep the global pin pointing at the file
     tab.path = np;
     tab.name = baseName(np);
     tab._row = findNodeByPath(np)?._row || null;
@@ -1219,6 +1328,7 @@ async function deleteNode(node) {
   if (!ok) return;
   const res = await api.trash(node._path);
   if (res.error) { flash('Could not delete.'); return; }
+  wm.pins.remove(node._path); // a trashed note can't stay pinned
   closeTabByPath(node._path, true); // skip save — the file is gone, don't re-write it
   const parent = parentNodeOf(node);
   if (parent) await refreshNode(parent);
@@ -1236,6 +1346,7 @@ async function deleteTabFile(tab) {
   if (!ok) return;
   const res = await api.trash(tab.path);
   if (res.error) { flash('Could not delete.'); return; }
+  wm.pins.remove(tab.path); // a trashed note can't stay pinned
   closeTab(tab, true); // skip save — the file is gone
 }
 
@@ -1422,6 +1533,58 @@ window.addEventListener('mousemove', function clearNoHover() {
   window.removeEventListener('mousemove', clearNoHover);
 });
 
+// ---- update banner --------------------------------------------------------
+// Main checked GitHub and found a newer release: a small non-modal banner in
+// the bottom-right offers Update (download + open the installer, with
+// progress), Skip this version (mutes that version), or × (hide for now —
+// re-offered on the next 4-hourly check). Hidden in sticky mode by CSS.
+let updateBanner = null;
+function hideUpdateBanner() { if (updateBanner) { updateBanner.remove(); updateBanner = null; } }
+
+window.updates.onAvailable(({ version, htmlUrl }) => {
+  hideUpdateBanner();
+  const el = document.createElement('div');
+  el.id = 'update-banner';
+  const msg = document.createElement('span');
+  msg.className = 'update-msg';
+  msg.textContent = `Notation v${version} is available`;
+  const update = document.createElement('button');
+  update.className = 'update-go';
+  update.textContent = 'Update';
+  update.addEventListener('click', async () => {
+    update.disabled = true;
+    update.textContent = 'Downloading…';
+    const res = await window.updates.download();
+    if (res && res.error) {
+      // Couldn't download/open the installer here — hand off to the releases page.
+      update.disabled = false;
+      update.textContent = 'Open releases page';
+      update.onclick = () => api.openExternal(htmlUrl);
+      flash('Update failed: ' + res.error);
+    } else {
+      hideUpdateBanner();
+      if (wm.platform !== 'win32') flash('Installer opened — quit Notation to finish updating.');
+    }
+  });
+  const skip = document.createElement('button');
+  skip.className = 'update-skip';
+  skip.textContent = 'Skip this version';
+  skip.addEventListener('click', () => window.updates.skip(version));
+  const close = document.createElement('button');
+  close.className = 'update-close';
+  close.title = 'Dismiss';
+  close.innerHTML = TAB_CLOSE_SVG;
+  close.addEventListener('click', hideUpdateBanner);
+  el.append(msg, update, skip, close);
+  document.body.append(el);
+  updateBanner = el;
+});
+window.updates.onProgress(({ percent }) => {
+  const btn = updateBanner && updateBanner.querySelector('.update-go');
+  if (btn && btn.disabled) btn.textContent = `Downloading… ${percent}%`;
+});
+window.updates.onDismissed(hideUpdateBanner);
+
 // ---- boot ---------------------------------------------------------------
 function initialFileFromHash() {
   const m = location.hash.match(/file=([^&]+)/);
@@ -1439,11 +1602,8 @@ async function boot() {
     const r = await wm.session.getRestore();
     if (r && Array.isArray(r.tabs) && r.tabs.length) {
       for (const p of r.tabs) await openFile(p, findRowByPath(p));
-      // Re-apply saved pin state (paths-with-tabs order matches r.tabs order).
-      if (Array.isArray(r.pinned)) {
-        tabs.forEach((t, i) => { t.pinned = !!r.pinned[i]; });
-        renderTabs();
-      }
+      // (pin flags are NOT restored per window — pins are app-global; the
+      // applyGlobalPins merge below re-flags and re-orders them.)
       if (tabs.length) {
         const idx = Number.isInteger(r.activeIndex) ? r.activeIndex : 0;
         const target = tabs[idx] || tabs[tabs.length - 1];
@@ -1462,5 +1622,13 @@ async function boot() {
     const t = activeTab();
     if (t) revealInTree(t.path); // show just the active note's folder
   }
+  // Merge the app-global pinned notes into this window (background tabs; the
+  // restored active tab keeps focus). Every window — new, restored or sticky —
+  // seeds its pinned block this way.
+  try { await applyGlobalPins(await wm.pins.get()); } catch {}
 }
 boot();
+
+// The OS asked us to open a file (file association / a second launch naming a
+// path): main routed it to this window.
+wm.onOpenPath(({ path }) => { if (path) openFile(path, findRowByPath(path)); });

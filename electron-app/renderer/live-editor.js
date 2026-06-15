@@ -1,6 +1,6 @@
 'use strict';
 
-// ---- live-preview editor (Typora-style, per-line) -----------------------
+// ---- live-preview editor (per-line) -------------------------------------
 // Every source line is its own always-rendered element (.ln). Inactive lines show
 // the rendered look (markers gone, bullets/checkboxes/quote-borders applied) via
 // window.renderInline; the single line the caret sits on is the only editable one
@@ -492,6 +492,39 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     commit();
   }
 
+  // Insert a markdown footnote: drop a [^N] reference at the caret and append a
+  // matching "[^N]: " definition at the foot of the document, leaving the caret in
+  // the definition to type the note text. N auto-increments past any existing
+  // footnote so references stay unique; definitions group together at the bottom.
+  function insertFootnote() {
+    if (active < 0 || blockMode || !ta) return;
+    recordHistory('struct');
+    let max = 0;
+    for (const ln of lines) {
+      const re = /\[\^(\d+)\]/g;
+      let m;
+      while ((m = re.exec(ln))) { const n = parseInt(m[1], 10); if (n > max) max = n; }
+    }
+    const id = max + 1;
+    const value = ta.textContent;
+    const { start, end } = getSelectionOffsets(ta);
+    lines[active] = value.slice(0, start) + '[^' + id + ']' + value.slice(end);
+    const def = '[^' + id + ']: ';
+    const NOTE_DEF = /^ {0,3}\[\^[^\]]+\]:\s/;
+    let lastDef = -1;
+    for (let i = lines.length - 1; i >= 0; i--) { if (NOTE_DEF.test(lines[i])) { lastDef = i; break; } }
+    let defLine;
+    if (lastDef >= 0) {
+      lines.splice(lastDef + 1, 0, def);
+      defLine = lastDef + 1;
+    } else {
+      while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+      lines.push('', def);
+      defLine = lines.length - 1;
+    }
+    pendingCaret = def.length; goalX = null; commit(); renderAll(defLine);
+  }
+
   // Insert a block construct on its own lines below the active line (replacing
   // it when it's blank): table → a 2×2 skeleton opened in the cell editor;
   // codeblock → a fence pair with the caret inside; hr → a "---" line.
@@ -523,7 +556,7 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     return active >= 0 && !blockMode && !tedit;
   }
 
-  // ---- smart structure typing (Typora-style) ----------------------------
+  // ---- smart structure typing -------------------------------------------
   // One indent level for nested lists. parseList (markdown.js) nests on any
   // deeper indent, so two spaces is enough and keeps lines compact.
   const INDENT = '  ';
@@ -562,7 +595,7 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     }
   }
 
-  // Typora-style Enter on the active line. Returns true when handled:
+  // Live-preview Enter on the active line. Returns true when handled:
   // an unclosed ``` fence auto-closes into a code block, a list/task/quote
   // line continues its marker onto the new line, and Enter on an *empty*
   // item exits the list (outdenting one level first when nested).
@@ -696,6 +729,14 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
   // (which is #live in both the normal and the sticky view) so the caret sits inside
   // a small margin. Uses the precise caret rect when measurable, else the active
   // element's box (blank lines / region textareas have no caret rect).
+  // In sticky mode a fixed #sticky-title bar paints over the top of #live, so the
+  // real usable top sits below it; elsewhere it's 0. Lets scroll math (and the
+  // arrow-key row probes) keep the caret out from under the bar.
+  function topOverlayInset() {
+    const t = document.getElementById('sticky-title');
+    if (!t || getComputedStyle(t).display === 'none') return 0;
+    return t.getBoundingClientRect().height;
+  }
   function scrollCaretIntoView() {
     if (!ta) return;
     const cr = container.getBoundingClientRect();
@@ -704,7 +745,8 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     if (g) { top = g.top; bottom = g.bottom; }
     else { const er = ta.getBoundingClientRect(); top = er.top; bottom = er.bottom; }
     const pad = 10;
-    if (top < cr.top + pad) container.scrollTop -= (cr.top + pad) - top;
+    const topEdge = cr.top + topOverlayInset() + pad;
+    if (top < topEdge) container.scrollTop -= topEdge - top;
     else if (bottom > cr.bottom - pad) container.scrollTop += bottom - (cr.bottom - pad);
   }
 
@@ -950,6 +992,13 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     } else if (e.key === 'Backspace' && start === 0 && end === 0) {
       if (active === 0) return;
       e.preventDefault();
+      // Backspacing into a table from the line below deletes the whole table —
+      // merging this line into the table's last row would corrupt it.
+      const prev = regionAt(active - 1);
+      if (prev && prev.type === 'table' && prev.end === active) {
+        deleteTableRegion(prev, prev.start, 0);
+        return;
+      }
       recordHistory('struct');
       const col = lines[active - 1].length;
       lines[active - 1] = lines[active - 1] + lines[active];
@@ -959,11 +1008,25 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     } else if (e.key === 'Delete' && start === value.length && end === value.length) {
       if (active >= lines.length - 1) return;
       e.preventDefault();
+      // Mirror of the Backspace case: forward-delete into a table removes it.
+      const next = regionStartingAt(active + 1);
+      if (next && next.type === 'table') {
+        deleteTableRegion(next, active, value.length);
+        return;
+      }
       recordHistory('struct');
       const col = value.length;
       lines[active] = lines[active] + lines[active + 1];
       lines.splice(active + 1, 1);
       pendingCaret = col; commit(); renderAll(active);
+    } else if (e.key === 'ArrowLeft' && !e.shiftKey && !mod && !e.altKey && start === 0 && end === 0) {
+      // At the line start, ← crosses to the end of the previous line (native
+      // can't leave the per-line contenteditable).
+      if (active > 0) { e.preventDefault(); activate(active - 1, Infinity); }
+    } else if (e.key === 'ArrowRight' && !e.shiftKey && !mod && !e.altKey
+               && start === value.length && end === value.length) {
+      // At the line end, → crosses to the start of the next line.
+      if (active < lines.length - 1) { e.preventDefault(); activate(active + 1, 0); }
     } else if (e.key === 'ArrowUp' && !e.shiftKey) {
       // Move up one *rendered row* at a stable goal x. Within a wrapped line we drive the
       // caret manually (caretColFromPoint at the goal x, half a row up) rather than leaning
@@ -974,7 +1037,14 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
       if (goalX == null) goalX = g ? g.x : ta.getBoundingClientRect().left;
       if (g && !g.atTop) {
         e.preventDefault();
-        const c = caretColFromPoint(ta, goalX, g.top - g.lh * 0.5);
+        // The target row may sit above the visible frame (under the sticky title or
+        // off the top edge); caretRangeFromPoint can't resolve an off-screen point and
+        // would snap to the line's middle, so scroll it into view first, then probe.
+        const cr = container.getBoundingClientRect();
+        let y = g.top - g.lh * 0.5;
+        const limit = cr.top + topOverlayInset() + g.lh * 0.5;
+        if (y < limit) { const before = container.scrollTop; container.scrollTop -= limit - y; y += before - container.scrollTop; }
+        const c = caretColFromPoint(ta, goalX, y);
         if (c != null) { setCaretOffset(ta, c); lastCaretCol = c; }
         scrollCaretIntoView();
       } else if (active > 0) {
@@ -989,7 +1059,16 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
       if (goalX == null) goalX = g ? g.x : ta.getBoundingClientRect().left;
       if (g && !g.atBottom) {
         e.preventDefault();
-        const c = caretColFromPoint(ta, goalX, g.bottom + g.lh * 0.5);
+        // The next row often rides just below the visible frame (the caret hugs the
+        // bottom margin as we scroll); caretRangeFromPoint can't resolve an off-screen
+        // point and would snap to the line's middle — the "stuck on a wrapped line"
+        // bug. Scroll it into view first, adjusting the probe y by the real scroll
+        // applied (clamped at the document end), then sample the column.
+        const cr = container.getBoundingClientRect();
+        let y = g.bottom + g.lh * 0.5;
+        const limit = cr.bottom - g.lh * 0.5;
+        if (y > limit) { const before = container.scrollTop; container.scrollTop += y - limit; y -= container.scrollTop - before; }
+        const c = caretColFromPoint(ta, goalX, y);
         if (c != null) { setCaretOffset(ta, c); lastCaretCol = c; }
         scrollCaretIntoView();
       } else if (active < lines.length - 1) {
@@ -1034,6 +1113,12 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
       e.preventDefault();
       if (active > 0) activate(active - 1, Infinity);
     } else if (e.key === 'ArrowDown' && !ta.value.slice(to).includes('\n')) {
+      e.preventDefault();
+      if (activeEnd < lines.length) activate(activeEnd, 0);
+    } else if (e.key === 'ArrowLeft' && at === 0) {
+      e.preventDefault();
+      if (active > 0) activate(active - 1, Infinity);
+    } else if (e.key === 'ArrowRight' && to === ta.value.length) {
       e.preventDefault();
       if (activeEnd < lines.length) activate(activeEnd, 0);
     }
@@ -1207,6 +1292,20 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     tableOpAt(tedit.start, tedit.model, fn, r, c);
   }
 
+  // Remove a whole table region (the context menu's "Delete table" and a
+  // Backspace/Delete pressed against the table's edge). `target` is the line
+  // to activate afterwards (post-splice index), `caret` its caret column.
+  function deleteTableRegion(reg, target, caret) {
+    recordHistory('struct');
+    tedit = null;
+    lines.splice(reg.start, reg.end - reg.start);
+    if (!lines.length) lines = [''];
+    pendingCaret = caret == null ? 0 : caret;
+    goalX = null;
+    commit();
+    renderAll(clampLine(target == null ? reg.start : target));
+  }
+
   function onTableCellKeydown(e) {
     if (!tedit) return;
     const model = tedit.model;
@@ -1286,6 +1385,13 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
       { label: 'Align left', action: () => op((m) => { m.aligns[c] = 'left'; }, r, c) },
       { label: 'Align centre', action: () => op((m) => { m.aligns[c] = 'center'; }, r, c) },
       { label: 'Align right', action: () => op((m) => { m.aligns[c] = 'right'; }, r, c) },
+      { sep: true },
+      { label: 'Delete table', danger: true, action: () => {
+        // Re-derive the region at action time: the menu click's focusout may
+        // have closed the editor, and earlier ops can have shifted the lines.
+        const reg = regionStartingAt(start);
+        if (reg && reg.type === 'table') deleteTableRegion(reg, start, 0);
+      } },
     ]);
   }
 
@@ -1542,13 +1648,18 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     return { line: i, col: ro <= rlen / 2 ? 0 : lines[i].length };
   }
 
-  // Backspace / Delete on a selection that spans rendered (inactive) lines — there's
-  // no active contenteditable to receive the key, so the doc level handles it. A
-  // single-line selection inside the active line still deletes natively. Deletes the
-  // precise highlighted span (keep the head of the first line + tail of the last).
+  // Backspace / Delete / a typed character / Enter on a selection that spans
+  // rendered (inactive) lines — there's no active contenteditable to receive the
+  // key, so the doc level handles it. The selection is deleted precisely (keep
+  // the head of the first line + tail of the last); a typed character lands at
+  // the join, Enter splits there. A selection wholly inside the active line /
+  // the editing table cell stays the browser's to handle.
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Backspace' && e.key !== 'Delete') return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const printable = e.key.length === 1;
+    const isDelete = e.key === 'Backspace' || e.key === 'Delete';
+    const isEnter = e.key === 'Enter';
+    if (!printable && !isDelete && !isEnter) return;
     if (container.hidden) return;
     const focused = document.activeElement;
     if (!(container.contains(focused) || focused === document.body || focused === container)) return;
@@ -1556,8 +1667,6 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
     const range = sel.getRangeAt(0);
     if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return;
-    // A selection wholly inside the active line / the editing table cell is
-    // the browser's to handle.
     if (active >= 0 && ta && ta.contains(range.startContainer) && ta.contains(range.endContainer)) return;
     if (tedit && tedit.cellEl && tedit.cellEl.contains(range.startContainer) && tedit.cellEl.contains(range.endContainer)) return;
     const a = domPointToSource(range.startContainer, range.startOffset, false);
@@ -1567,12 +1676,21 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     recordHistory('struct');
     const head = lines[a.line].slice(0, a.col);
     const tail = lines[b.line].slice(b.col);
-    lines.splice(a.line, b.line - a.line + 1, head + tail);
-    renumberListBlock(a.line);
-    pendingCaret = a.col;
     goalX = null;
-    commit();
-    renderAll(a.line);
+    if (isEnter) {
+      lines.splice(a.line, b.line - a.line + 1, head, tail);
+      renumberListBlock(a.line + 1);
+      pendingCaret = 0;
+      commit();
+      renderAll(a.line + 1);
+    } else {
+      const ch = printable ? e.key : '';
+      lines.splice(a.line, b.line - a.line + 1, head + ch + tail);
+      renumberListBlock(a.line);
+      pendingCaret = a.col + ch.length;
+      commit();
+      renderAll(a.line);
+    }
   });
 
   // ---- public API -------------------------------------------------------
@@ -1612,6 +1730,7 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
         case 'strike':    if (ensureActive()) wrapInline('~~'); break;
         case 'code':      if (ensureActive()) wrapInline('`'); break;
         case 'link':      if (ensureActive()) insertLink(); break;
+        case 'footnote':  if (ensureActive()) insertFootnote(); break;
         case 'h1': case 'h2': case 'h3':
         case 'ul': case 'ol': case 'task': case 'quote':
           if (ensureActive()) setLineMarker(action); break;

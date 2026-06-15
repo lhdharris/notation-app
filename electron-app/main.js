@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, clipboard } = 
 const path = require('path');
 const fs = require('fs');
 const url = require('url');
+const { initUpdater } = require('./updater');
 
 // ---- native Wayland -----------------------------------------------------
 // Run as a native Wayland client on Wayland sessions (no-op on X11 / Windows /
@@ -73,6 +74,77 @@ function withinWorkspace(target) {
   return null;
 }
 
+// Files the user explicitly opened from outside any workspace (OS "Open with" /
+// file-association launches, pinned notes whose workspace was unlinked). The
+// tab-level fs handlers (read/write/watch/trash/reveal) accept these too; tree
+// and directory operations stay workspace-only, so the renderer still can't
+// roam the disk — only the exact files the user opened.
+const externalPaths = new Set();
+
+function allowExternal(p) {
+  if (typeof p !== 'string' || !p) return null;
+  const resolved = path.resolve(p);
+  if (!withinWorkspace(resolved)) externalPaths.add(resolved);
+  return resolved;
+}
+
+function withinWorkspaceOrExternal(target) {
+  const ws = withinWorkspace(target);
+  if (ws) return ws;
+  if (typeof target !== 'string' || !target) return null;
+  const resolved = path.resolve(target);
+  return externalPaths.has(resolved) ? resolved : null;
+}
+
+// ---- OS-opened files ------------------------------------------------------
+// macOS delivers a Finder/file-association open as an 'open-file' event, which
+// can fire before app ready — queue those and drain once the session is
+// restored. Windows/Linux pass the path on argv (first launch) or through the
+// 'second-instance' handler.
+const pendingOpenPaths = [];
+let appReadyAndRestored = false;
+app.on('open-file', (e, p) => {
+  e.preventDefault();
+  if (appReadyAndRestored) openPathInApp(p);
+  else pendingOpenPaths.push(p);
+});
+
+// A real file named on a launch / second-instance command line, or null. Skips
+// the executable (plus the app-dir argument of an unpackaged run) and switches.
+function extractFileArg(argv, cwd) {
+  const args = Array.isArray(argv) ? argv.slice(app.isPackaged ? 1 : 2) : [];
+  for (const a of args) {
+    if (typeof a !== 'string' || !a || a.startsWith('-')) continue;
+    const p = path.resolve(cwd || process.cwd(), a);
+    try { if (fs.statSync(p).isFile()) return p; } catch {}
+  }
+  return null;
+}
+
+// Open an OS-provided file path as a tab in an existing normal window, or in a
+// fresh window when only stickies (or nothing) are open.
+function openPathInApp(rawPath) {
+  if (typeof rawPath !== 'string' || !rawPath) return;
+  let p = path.resolve(rawPath);
+  try { p = fs.realpathSync(p); } catch {}
+  try { if (!fs.statSync(p).isFile()) return; } catch { return; }
+  allowExternal(p);
+  const win = getTargetNormalWindow();
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    // A first-launch file arg lands right after restoreSessionOrCreate, while
+    // the restored window is still loading — sending then would drop the
+    // message before the renderer has subscribed.
+    const send = () => { if (!win.isDestroyed()) win.webContents.send('tab:openPath', { path: p }); };
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send);
+    else send();
+  } else {
+    createWindow(p);
+  }
+}
+
 // True if `child` is `parent` itself or lives inside its subtree. Used by the
 // move/copy handlers to refuse dropping a folder into itself or a descendant.
 function isInside(child, parent) {
@@ -100,7 +172,7 @@ function uniqueCopyName(src) {
 // with its previous geometry, tabs and — for a post-it — its sticky state. The
 // window is `transparent` so sticky-mode rounded corners show through (style.css).
 function createWindow(initialFile, opts = {}) {
-  const file = initialFile ? withinWorkspace(initialFile) : null;
+  const file = initialFile ? withinWorkspaceOrExternal(initialFile) : null;
   const restore = opts.restore || null;
   const stickyRestore = restore && restore.sticky ? restore.sticky : null;
 
@@ -172,7 +244,18 @@ function createWindow(initialFile, opts = {}) {
     pinStickyOnTop(win);
     if (!win.isDestroyed()) win.webContents.send('sticky-max-state', on);
   };
-  win.on('maximize',   () => { if (win._sticky) sendStickyMaxState(true); });
+  win.on('maximize', () => {
+    if (!win._sticky) return;
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      // On mac/win the system swallows a dblclick on the drag-region title strip
+      // and zooms/maximizes the window itself (the DOM never sees the dblclick).
+      // Treat that gesture as "restore to a normal window": the renderer runs
+      // the shared grow-then-fade exit (wm-sticky-restore unmaximizes first).
+      if (!win.isDestroyed()) win.webContents.send('sticky:restore-request');
+      return;
+    }
+    sendStickyMaxState(true); // Linux: tolerate the WM maximize as before
+  });
   win.on('unmaximize', () => { if (win._sticky) sendStickyMaxState(false); });
 
   // Keep the persisted session current as the window moves/resizes, and update a
@@ -188,6 +271,7 @@ function createWindow(initialFile, opts = {}) {
   };
   win.on('move', onGeometryChange);
   win.on('resize', onGeometryChange);
+  win.on('focus', () => { if (!win._sticky) lastFocusedNormalId = win.id; });
   win.on('close', () => onWindowClose(win));
   win.on('closed', () => broadcastWindowCount());
   broadcastWindowCount(); // a new window appeared: existing windows can now "Gather"
@@ -297,7 +381,7 @@ function unpinStickyOnTop(win) {
 // like on any normal window. We never toggle setResizable (avoids Electron's
 // Linux save/restore-min/max trap), so programmatic setSize/setBounds still works.
 function relaxStickySize(win) {
-  if (win.isDestroyed() || process.platform === 'darwin') return;
+  if (win.isDestroyed()) return;
   win.setMinimumSize(STICKY_MIN_W, STICKY_MIN_H);
   win.setMaximumSize(0, 0);
 }
@@ -305,10 +389,8 @@ function relaxStickySize(win) {
 function unlockStickySize(win) {
   if (win.isDestroyed()) return;
   win.setResizable(true);
-  if (process.platform !== 'darwin') {
-    win.setMinimumSize(0, 0);
-    win.setMaximumSize(0, 0);
-  }
+  win.setMinimumSize(0, 0);
+  win.setMaximumSize(0, 0);
 }
 
 // Pull a rect into the nearest display's work area so the sticky is always
@@ -350,7 +432,7 @@ ipcMain.handle('wm-sticky-shrink', async (e, size) => {
   // at creation) otherwise clamps the very first shrink partway — the minimum
   // only got lowered after the first restore (via unlockStickySize), which is
   // why the first stickify used to stall on the way down.
-  if (process.platform !== 'darwin') { win.setResizable(true); win.setMinimumSize(0, 0); win.setMaximumSize(0, 0); }
+  win.setResizable(true); win.setMinimumSize(0, 0); win.setMaximumSize(0, 0);
   // Go transparent for the post-it: the renderer is already in sticky-mode, so
   // the rounded corners must show through (the normal editor paints white).
   win.setBackgroundColor('#00000000');
@@ -503,6 +585,28 @@ ipcMain.handle('link:open', (_e, { href, fromPath } = {}) => {
 // decides the outcome from which window (if any) reported adopting it.
 const liveWindows = () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
 
+// The window an OS-level open/activation should land in: the focused normal
+// (non-sticky) window, else the last-focused normal one, else any normal one.
+let lastFocusedNormalId = null;
+function getTargetNormalWindow() {
+  const normals = liveWindows().filter((w) => !w._sticky);
+  return normals.find((w) => w.isFocused())
+      || normals.find((w) => w.id === lastFocusedNormalId)
+      || normals[0] || null;
+}
+
+// Second launches / dock clicks land here: surface a normal editor window. With
+// only stickies open (they're already on top and shouldn't be hijacked), open a
+// fresh editor instead.
+function focusOrCreateNormalWindow() {
+  const win = getTargetNormalWindow();
+  if (!win) return createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  return win;
+}
+
 // Tell every window how many windows are open now: total, and how many are
 // normal (non-sticky) editor windows. The renderer greys out the tab menu's
 // gather items when there is nothing to gather — "Gather all windows" needs a
@@ -542,7 +646,7 @@ ipcMain.on('tab-open-new-window', (_e, p) => { createWindow(p); });
 // localStorage, keyed by file path).
 ipcMain.on('tab-open-sticky', (e, payload) => {
   const { path: p, size } = payload || {};
-  const file = withinWorkspace(p);
+  const file = withinWorkspaceOrExternal(p);
   if (!file) return;
   const src = BrowserWindow.fromWebContents(e.sender);
   const sb = src && !src.isDestroyed() ? src.getBounds() : null;
@@ -727,6 +831,86 @@ ipcMain.handle('session:getRestore', (e) => {
   return win && win._restore ? win._restore : null;
 });
 
+// ---- global pinned tabs ---------------------------------------------------
+// Pinned tabs are app-global: ONE ordered path list in config.json, present in
+// every window (stickies included) and restored on relaunch. Main is the single
+// arbiter — every change re-broadcasts the full list and each window reconciles
+// (renderer applyGlobalPins), so concurrent pins/unpins can't diverge.
+function pinnedTabs() {
+  const cfg = readConfig();
+  return Array.isArray(cfg.pinnedTabs)
+    ? cfg.pinnedTabs.filter((p) => typeof p === 'string' && p)
+    : [];
+}
+
+function setPinnedTabs(list) {
+  const cfg = readConfig();
+  cfg.pinnedTabs = [...new Set(list.filter((p) => typeof p === 'string' && p))];
+  writeConfig(cfg);
+  broadcastPins(cfg.pinnedTabs);
+}
+
+function broadcastPins(list) {
+  const pinned = list || pinnedTabs();
+  for (const w of liveWindows()) {
+    if (w.webContents && !w.webContents.isDestroyed()) w.webContents.send('pins:changed', { pinned });
+  }
+}
+
+ipcMain.handle('pins:get', () => pinnedTabs());
+
+ipcMain.on('pins:add', (_e, p) => {
+  if (typeof p !== 'string' || !p) return;
+  setPinnedTabs([...pinnedTabs(), allowExternal(p)]);
+});
+
+ipcMain.on('pins:remove', (_e, p) => {
+  if (typeof p !== 'string' || !p) return;
+  const resolved = path.resolve(p);
+  setPinnedTabs(pinnedTabs().filter((x) => x !== resolved));
+});
+
+// A drag-reorder of the pinned block: apply the new order, but never let a
+// stale renderer list drop a pin another window just added.
+ipcMain.on('pins:reorder', (_e, list) => {
+  if (!Array.isArray(list)) return;
+  const cur = pinnedTabs();
+  const next = list.filter((p) => cur.includes(p));
+  for (const p of cur) if (!next.includes(p)) next.push(p);
+  setPinnedTabs(next);
+});
+
+ipcMain.on('pins:rename', (_e, payload) => {
+  const { from, to } = payload || {};
+  if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) return;
+  const f = path.resolve(from);
+  allowExternal(to);
+  setPinnedTabs(pinnedTabs().map((p) => (p === f ? path.resolve(to) : p)));
+});
+
+// On launch: migrate pre-global sessions (derive the list from the saved
+// per-window pin flags), prune pins whose files vanished while the app was
+// closed, and allowlist out-of-workspace survivors.
+function initPinnedTabs() {
+  const cfg = readConfig();
+  let list = cfg.pinnedTabs;
+  if (!Array.isArray(list)) {
+    list = [];
+    const wins = cfg.session && Array.isArray(cfg.session.windows) ? cfg.session.windows : [];
+    for (const d of wins) {
+      const tabs = d && Array.isArray(d.tabs) ? d.tabs : [];
+      const pinned = d && Array.isArray(d.pinned) ? d.pinned : [];
+      tabs.forEach((p, i) => { if (p && pinned[i] && !list.includes(p)) list.push(p); });
+    }
+  }
+  cfg.pinnedTabs = list.filter((p) => {
+    if (typeof p !== 'string' || !p) return false;
+    try { return fs.statSync(p).isFile(); } catch { return false; }
+  });
+  writeConfig(cfg);
+  for (const p of cfg.pinnedTabs) allowExternal(p);
+}
+
 // ---- workspaces IPC -----------------------------------------------------
 ipcMain.handle('workspaces:list', () =>
   workspaces().map((p) => ({ name: path.basename(p), path: path.resolve(p) }))
@@ -761,8 +945,8 @@ ipcMain.handle('workspaces:remove', (_e, dirPath) => {
 // ---- filesystem IPC (all sandboxed to workspace roots) ------------------
 
 // List a directory's children — directories first, then files, each alphabetical
-// (case-insensitive). Powers the side-panel tree's lazy expansion. Dotfiles are
-// included so notes folders like .obsidian stay visible.
+// (case-insensitive). Powers the side-panel tree's lazy expansion. Hidden entries
+// (dotfiles/folders like .git, .obsidian) are filtered out to match the filesystem.
 ipcMain.handle('fs:readDir', (_e, dirPath) => {
   const dir = withinWorkspace(dirPath);
   if (!dir) return { error: 'outside-workspace' };
@@ -773,6 +957,7 @@ ipcMain.handle('fs:readDir', (_e, dirPath) => {
     return { error: err.code || 'read-failed' };
   }
   const items = entries
+    .filter((ent) => !ent.name.startsWith('.')) // hide hidden dotfiles/folders
     .map((ent) => {
       // Resolve symlinks to learn whether they point at a directory.
       let isDir = ent.isDirectory();
@@ -789,7 +974,7 @@ ipcMain.handle('fs:readDir', (_e, dirPath) => {
 });
 
 ipcMain.handle('fs:readFile', (_e, filePath) => {
-  const file = withinWorkspace(filePath);
+  const file = withinWorkspaceOrExternal(filePath);
   if (!file) return { error: 'outside-workspace' };
   try {
     const buf = fs.readFileSync(file);
@@ -804,7 +989,7 @@ ipcMain.handle('fs:readFile', (_e, filePath) => {
 });
 
 ipcMain.handle('fs:writeFile', (_e, filePath, content) => {
-  const file = withinWorkspace(filePath);
+  const file = withinWorkspaceOrExternal(filePath);
   if (!file) return { error: 'outside-workspace' };
   try {
     const text = typeof content === 'string' ? content : '';
@@ -926,7 +1111,7 @@ ipcMain.handle('fs:duplicate', (_e, srcPath) => {
 });
 
 ipcMain.handle('fs:trash', async (_e, targetPath) => {
-  const target = withinWorkspace(targetPath);
+  const target = withinWorkspaceOrExternal(targetPath);
   if (!target) return { error: 'outside-workspace' };
   try {
     await shell.trashItem(target);
@@ -937,7 +1122,7 @@ ipcMain.handle('fs:trash', async (_e, targetPath) => {
 });
 
 ipcMain.handle('fs:reveal', (_e, targetPath) => {
-  const target = withinWorkspace(targetPath);
+  const target = withinWorkspaceOrExternal(targetPath);
   if (!target) return { error: 'outside-workspace' };
   shell.showItemInFolder(target);
   return { ok: true };
@@ -1001,7 +1186,7 @@ function forgetWebContents(wc) {
 }
 
 ipcMain.on('fs:watch', (e, filePath) => {
-  const file = withinWorkspace(filePath);
+  const file = withinWorkspaceOrExternal(filePath);
   if (!file) return;
   let set = openFiles.get(file);
   if (!set) { set = new Set(); openFiles.set(file, set); }
@@ -1013,7 +1198,7 @@ ipcMain.on('fs:watch', (e, filePath) => {
 });
 
 ipcMain.on('fs:unwatch', (e, filePath) => {
-  const file = withinWorkspace(filePath);
+  const file = withinWorkspaceOrExternal(filePath);
   if (!file) return;
   const set = openFiles.get(file);
   if (!set) return;
@@ -1213,9 +1398,12 @@ ipcMain.handle('pdf:export', async (e, payload) => {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+  // A second launch (desktop shortcut, `open` command, file association) lands
+  // here: open any file it named, otherwise surface a normal editor window.
+  app.on('second-instance', (_e, argv, workingDirectory) => {
+    const file = extractFileArg(argv, workingDirectory);
+    if (file) openPathInApp(file);
+    else focusOrCreateNormalWindow();
   });
 
   // An explicit quit (Cmd-Q / app.quit) fires before windows close, so snapshot
@@ -1224,11 +1412,19 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => { quitting = true; persistSession(); closeWorkspaceWatchers(); });
 
   app.whenReady().then(() => {
+    initPinnedTabs();
     restoreSessionOrCreate();
     syncWorkspaceWatchers();
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    });
+    initUpdater({ readConfig, writeConfig });
+    // Drain files queued before ready (macOS 'open-file') plus any named on the
+    // first launch's own command line (Windows/Linux file associations).
+    appReadyAndRestored = true;
+    const f = extractFileArg(process.argv);
+    if (f) pendingOpenPaths.push(f);
+    for (const p of pendingOpenPaths.splice(0)) openPathInApp(p);
+    // macOS dock click / Finder re-launch: focus a normal window, or create one
+    // when only stickies are open (they float on top and shouldn't be hijacked).
+    app.on('activate', () => focusOrCreateNormalWindow());
   });
 
   app.on('window-all-closed', () => {
@@ -1242,6 +1438,9 @@ function restoreSessionOrCreate() {
   const cfg = readConfig();
   const windows = cfg.session && Array.isArray(cfg.session.windows) ? cfg.session.windows : [];
   const valid = windows.filter((d) => d && Array.isArray(d.tabs) && d.tabs.length);
+  // Re-allowlist previously OS-opened (out-of-workspace) tabs so they stay
+  // readable across restarts.
+  for (const d of valid) for (const p of d.tabs) allowExternal(p);
   if (!valid.length) { createWindow(); return; }
   for (const d of valid) createWindow(null, { restore: d });
 }

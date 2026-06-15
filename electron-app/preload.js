@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld('wm', {
   // maximizes a post-it like any window) so the renderer can square the rounded
   // corners and hide the resize grip while maximized.
   onStickyMaxState: (handler) => ipcRenderer.on('sticky-max-state', (_e, on) => handler(!!on)),
+  // main → renderer (mac/win): the system title-bar dblclick zoomed the post-it;
+  // run the grow-then-fade restore to a normal window instead.
+  onStickyRestoreRequest: (handler) => ipcRenderer.on('sticky:restore-request', () => handler()),
+  // main → renderer: a file the OS asked us to open (file association, second
+  // launch with a path) — open it as a tab in this window.
+  onOpenPath: (handler) => ipcRenderer.on('tab:openPath', (_e, payload) => handler(payload)),
 
   // ---- tabs: reorder + cross-window drag (OS drag-and-drop) ----
   // Open a path in a brand-new window (context menu + drag-to-empty-space).
@@ -67,6 +73,28 @@ contextBridge.exposeInMainWorld('wm', {
     update:     (payload) => ipcRenderer.send('session:update', payload),
     getRestore: () => ipcRenderer.invoke('session:getRestore'),
   },
+
+  // ---- global pinned tabs ----
+  // One app-wide ordered list, owned by main (config.json). Every change is
+  // re-broadcast as pins:changed with the full list; windows reconcile.
+  pins: {
+    get:       () => ipcRenderer.invoke('pins:get'),
+    add:       (path) => ipcRenderer.send('pins:add', path),
+    remove:    (path) => ipcRenderer.send('pins:remove', path),
+    reorder:   (paths) => ipcRenderer.send('pins:reorder', paths),
+    rename:    (from, to) => ipcRenderer.send('pins:rename', { from, to }),
+    onChanged: (handler) => ipcRenderer.on('pins:changed', (_e, payload) => handler(payload)),
+  },
+});
+
+// Update banner bridge: main announces a newer GitHub release; "Update"
+// downloads + opens the installer (with progress), "Skip" mutes that version.
+contextBridge.exposeInMainWorld('updates', {
+  onAvailable: (handler) => ipcRenderer.on('update:available', (_e, payload) => handler(payload)),
+  onProgress:  (handler) => ipcRenderer.on('update:progress', (_e, payload) => handler(payload)),
+  onDismissed: (handler) => ipcRenderer.on('update:dismissed', () => handler()),
+  download:    () => ipcRenderer.invoke('update:download'),
+  skip:        (version) => ipcRenderer.send('update:skip', version),
 });
 
 // Workspace + filesystem bridge. The renderer never touches `fs` directly;

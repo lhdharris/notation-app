@@ -1,13 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <!-- Notation app icon: a fanned stack of pastel sticky notes (the app's
-       post-it palette) on a light greyscale gradient (same scheme as
-       res/projector-app's icon), the front note carrying ink lines.
+       post-it palette) on a pale sticky-note yellow gradient, the front note
+       carrying ink lines. The backdrop yellow stays lighter than the front
+       note (#ffe59e) everywhere so the stack still reads against it.
        Ids are prefixed "ni-" so this markup can be inlined into other SVGs
        (res/make-banner.py does exactly that). -->
   <defs>
     <linearGradient id="ni-bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#bcbec3"/>
-      <stop offset="1" stop-color="#ffffff"/>
+      <stop offset="0" stop-color="#fff3b0"/>
+      <stop offset="1" stop-color="#fffdf2"/>
     </linearGradient>
     <filter id="ni-soft" x="-30%" y="-30%" width="160%" height="160%">
       <feGaussianBlur stdDeviation="18"/>

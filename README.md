@@ -24,7 +24,7 @@ just text.
 ## Live Markdown editing
 
 Type Markdown, see the document — the line you're editing shows its raw source, every
-other line renders in place (the Typora style):
+other line renders in place:
 
 - **Headings, lists, quotes, task lists** — interactive checkboxes included.
 - **Tables** edited cell-by-cell, in place; Tab/Enter navigation, rows and columns
