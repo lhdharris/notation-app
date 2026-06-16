@@ -1,3 +1,27 @@
+# Notation v1.2.3
+
+A minimalist local-first Markdown editor with desktop sticky notes. This release
+fixes how pinned notes interact with sticky notes, plus a multi-line editing
+glitch.
+
+## Sticky notes
+- **Moving a pinned note to a sticky no longer scrambles your tabs** — turning a
+  pinned note into a desktop post-it now cleanly hands it off: the new sticky
+  shows only that one note, and it stops being a global pin (so it leaves your
+  other windows and won't keep reappearing after you close it). Previously a
+  fresh sticky would silently soak up every pinned note as hidden tabs and
+  confuse the tab bar.
+- **Stickies stay single-note** — a sticky window no longer pulls in the app's
+  pinned notes; it re-syncs with your pins only if you restore it to a normal
+  window.
+
+## Editor
+- **Cross-line selection edits** — selecting text by dragging or Shift-clicking
+  past the current line and then typing, deleting, or pressing Enter now edits
+  the whole selection correctly instead of misfiring on the active line.
+
+---
+
 # Notation v1.2.2
 
 A minimalist local-first Markdown editor with desktop sticky notes. Every note is

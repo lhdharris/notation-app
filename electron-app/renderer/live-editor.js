@@ -261,6 +261,17 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     return { start, end: start + range.toString().length };
   }
   function getCaretOffset(el) { return getSelectionOffsets(el).end; }
+  // True when a non-collapsed selection reaches past the active line into other
+  // rendered lines (a cross-line drag / Shift selection). getSelectionOffsets clamps
+  // such a selection to {0,0} within the active line, so the per-line key handlers
+  // must defer to the document-level cross-line handler rather than act on it.
+  function selectionEscapesActive() {
+    if (!ta) return false;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+    const range = sel.getRangeAt(0);
+    return !(ta.contains(range.startContainer) && ta.contains(range.endContainer));
+  }
   function setCaretOffset(el, offset) {
     const sel = window.getSelection();
     const range = document.createRange();
@@ -923,6 +934,16 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
 
   function onActiveKeydown(e) {
     if (!ta || blockMode) return;
+    // A drag / Shift selection that reaches past this line into other rendered lines is a
+    // cross-line edit. Hand Backspace/Delete/Enter/typing to the document-level handler
+    // (which deletes the span precisely, then types or splits at the join) — acting here
+    // would misfire, since getSelectionOffsets clamps such a selection to {0,0} and the
+    // line-start Backspace path would merely merge this line into the one above.
+    if (!e.ctrlKey && !e.metaKey && !e.altKey
+        && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete' || e.key === 'Enter')
+        && selectionEscapesActive()) {
+      return;
+    }
     // Any non-vertical key ends a run of ↑/↓, so the next ↑/↓ re-seeds the goal column.
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') goalX = null;
     const value = ta.textContent;

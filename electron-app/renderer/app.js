@@ -512,7 +512,12 @@ async function reconcileGlobalPins(list) {
   renderTabs();
 }
 
-wm.pins.onChanged(({ pinned }) => applyGlobalPins(pinned));
+// A sticky window is a dedicated single-note post-it: never let global pins
+// open background tabs in it (its tab bar is hidden, so that just confuses the
+// tab state). It re-syncs on restore — see exitSticky.
+wm.pins.onChanged(({ pinned }) => {
+  if (!document.body.classList.contains('sticky-mode')) applyGlobalPins(pinned);
+});
 
 function setTabDirty(tab, v) {
   tab.dirty = v;
@@ -820,6 +825,9 @@ async function moveTabToSticky(tab) {
   const prefs = getStickyPrefs(tab.path);
   const size = (Number.isFinite(prefs.width) && Number.isFinite(prefs.height))
     ? { width: prefs.width, height: prefs.height } : null;
+  // The note now lives as the post-it: drop it from the app-global pin list so
+  // it leaves every other window and never reappears once closed there.
+  if (tab.pinned && tab.path) wm.pins.remove(tab.path);
   wm.openInSticky(tab.path, size);
   await closeTab(tab, true);
   closeWindowIfEmpty();
@@ -1026,6 +1034,9 @@ async function exitSticky() {
     requestAnimationFrame(() => requestAnimationFrame(() => fade.classList.add('out')));
     fade.addEventListener('transitionend', () => fade.remove(), { once: true });
     setTimeout(() => fade.remove(), 600); // safety net if transitionend is dropped
+    // Back to a normal window: catch up on any global-pin changes we ignored
+    // while sticky (sticky-mode now cleared, so the guards above won't skip it).
+    try { await applyGlobalPins(await wm.pins.get()); } catch {}
     reportSession();
   } finally {
     stickyExitInFlight = false;
@@ -1623,9 +1634,11 @@ async function boot() {
     if (t) revealInTree(t.path); // show just the active note's folder
   }
   // Merge the app-global pinned notes into this window (background tabs; the
-  // restored active tab keeps focus). Every window — new, restored or sticky —
-  // seeds its pinned block this way.
-  try { await applyGlobalPins(await wm.pins.get()); } catch {}
+  // restored active tab keeps focus). A sticky window is skipped — it shows only
+  // its own note and re-syncs if ever restored to a normal window (exitSticky).
+  if (!document.body.classList.contains('sticky-mode')) {
+    try { await applyGlobalPins(await wm.pins.get()); } catch {}
+  }
 }
 boot();
 
