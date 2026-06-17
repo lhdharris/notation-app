@@ -909,6 +909,10 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
 
   function onActivePaste(e) {
     if (!ta || blockMode) return;
+    // A selection that reaches past this line into other rendered lines is a
+    // cross-line edit: getSelectionOffsets would clamp it to {0,0} and paste at
+    // the line start. Let it bubble to the document-level cross-line paste handler.
+    if (selectionEscapesActive()) return;
     e.preventDefault();
     recordHistory('struct');
     const cd = e.clipboardData || window.clipboardData;
@@ -1712,6 +1716,40 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
       commit();
       renderAll(a.line);
     }
+  });
+
+  // Paste over a selection that spans rendered (inactive) lines — there's no
+  // active contenteditable to receive it, so the doc handles it: delete the span
+  // (keep the head of the first line + tail of the last) and splice the clipboard
+  // text in at the join, caret after the inserted text. A selection wholly inside
+  // the active line / editing table cell stays the browser's (onActivePaste).
+  document.addEventListener('paste', (e) => {
+    if (container.hidden) return;
+    const focused = document.activeElement;
+    if (!(container.contains(focused) || focused === document.body || focused === container)) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return;
+    if (active >= 0 && ta && ta.contains(range.startContainer) && ta.contains(range.endContainer)) return;
+    if (tedit && tedit.cellEl && tedit.cellEl.contains(range.startContainer) && tedit.cellEl.contains(range.endContainer)) return;
+    const a = domPointToSource(range.startContainer, range.startOffset, false);
+    const b = domPointToSource(range.endContainer, range.endOffset, true);
+    if (!a || !b || a.line > b.line || (a.line === b.line && a.col >= b.col)) return;
+    e.preventDefault();
+    const cd = e.clipboardData || window.clipboardData;
+    const pasted = (cd ? cd.getData('text/plain') : '') || '';
+    recordHistory('struct');
+    goalX = null;
+    const head = lines[a.line].slice(0, a.col);
+    const tail = lines[b.line].slice(b.col);
+    const newLines = (head + pasted + tail).replace(/\r\n?/g, '\n').split('\n');
+    lines.splice(a.line, b.line - a.line + 1, ...newLines);
+    renumberListBlock(a.line);
+    const target = a.line + newLines.length - 1;
+    pendingCaret = newLines[newLines.length - 1].length - tail.length;
+    commit();
+    renderAll(target);
   });
 
   // ---- public API -------------------------------------------------------

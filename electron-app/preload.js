@@ -73,18 +73,6 @@ contextBridge.exposeInMainWorld('wm', {
     update:     (payload) => ipcRenderer.send('session:update', payload),
     getRestore: () => ipcRenderer.invoke('session:getRestore'),
   },
-
-  // ---- global pinned tabs ----
-  // One app-wide ordered list, owned by main (config.json). Every change is
-  // re-broadcast as pins:changed with the full list; windows reconcile.
-  pins: {
-    get:       () => ipcRenderer.invoke('pins:get'),
-    add:       (path) => ipcRenderer.send('pins:add', path),
-    remove:    (path) => ipcRenderer.send('pins:remove', path),
-    reorder:   (paths) => ipcRenderer.send('pins:reorder', paths),
-    rename:    (from, to) => ipcRenderer.send('pins:rename', { from, to }),
-    onChanged: (handler) => ipcRenderer.on('pins:changed', (_e, payload) => handler(payload)),
-  },
 });
 
 // Update banner bridge: main announces a newer GitHub release; "Update"

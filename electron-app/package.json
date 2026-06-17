@@ -1,6 +1,6 @@
 {
   "name": "notation-app",
-  "version": "1.2.3",
+  "version": "1.2.5",
   "description": "A minimalist markdown editor with a collapsible workspace panel.",
   "homepage": "https://github.com/lhdharris/notation-app",
   "main": "main.js",

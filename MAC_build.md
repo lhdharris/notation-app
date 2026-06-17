@@ -11,8 +11,18 @@ up to date locally — verify rather than assume (step 1).
 Throughout, set `VERSION` once and reuse it (example bumps a patch release):
 
 ```bash
-VERSION=1.2.2          # the NEW version you're cutting (current is 1.2.1)
+VERSION=1.2.5          # the NEW version you're cutting (last release is 1.2.3)
 ```
+
+> **For v1.2.5 the Linux box already did the first half.** The version bump
+> (`package.json` → 1.2.5), the new `RELEASE_NOTES.md` section, the Linux `.rpm`
+> (`electron-app/dist/notation-app-1.2.5.x86_64.rpm`), and the release commit
+> (`Notation v1.2.5: …`) are all done and synced here via Syncthing — but **not
+> pushed**. So on the Mac you **skip the bump/notes/commit in step 2**: just
+> confirm the synced commit, `git push origin main` and tag, then build the
+> remaining platforms (step 4 — you can reuse the synced `.rpm` instead of
+> building rpm on macOS) and publish (step 5). The generic step 2 below is for a
+> normal release where the Mac does the whole thing.
 
 ## 0. Prerequisites
 

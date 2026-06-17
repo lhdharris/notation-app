@@ -441,9 +441,10 @@ window.addEventListener('resize', updateTabOverflow);
 // moves the tab to the end of that group; unpinning drops it just after the
 // group. Drag-reordering can't cross the boundary (see reorderTo).
 //
-// Pins are app-GLOBAL: main owns one ordered list (config.json) that every
-// window mirrors. pin/unpin apply locally first, then tell main; main
-// re-broadcasts the full list and every window reconciles in applyGlobalPins.
+// Pins are LOCAL to their window — pinning here never opens the note in any
+// other window. The pin flag rides along in the per-window session snapshot
+// (reportSession), and on a fresh launch main gathers every window's pins plus
+// any sticky notes into one window as pinned tabs (see restoreSessionOrCreate).
 const pinnedCount = () => tabs.filter((t) => t.pinned).length;
 
 function pinTab(tab) {
@@ -456,7 +457,6 @@ function pinTab(tab) {
   // tabs — exactly the index at the end of the pinned group.
   tabs.splice(pinnedCount(), 0, tab);
   renderTabs();
-  wm.pins.add(tab.path);
 }
 
 function unpinTab(tab) {
@@ -467,57 +467,7 @@ function unpinTab(tab) {
   tab.pinned = false;
   tabs.splice(pinnedCount(), 0, tab); // first unpinned slot
   renderTabs();
-  // Local unpin FIRST, then tell main: when the broadcast comes back this tab
-  // is already unpinned here, so the reconciler leaves it as a normal tab in
-  // this window while every other window closes its copy.
-  if (tab.path) wm.pins.remove(tab.path);
 }
-
-// Reconcile this window's tabs with the global pin list. Idempotent and
-// serialized (boot + every pins:changed broadcast funnel through one chain so
-// two broadcasts can't interleave their async opens).
-let pinsApplying = Promise.resolve();
-const warnedMissingPins = new Set();
-function applyGlobalPins(list) {
-  const pinned = Array.isArray(list) ? list.filter((p) => typeof p === 'string' && p) : [];
-  pinsApplying = pinsApplying.then(() => reconcileGlobalPins(pinned)).catch(() => {});
-  return pinsApplying;
-}
-
-async function reconcileGlobalPins(list) {
-  // A tab still flagged pinned here but gone from the list was unpinned in
-  // another window — it lives on there as a normal tab; close our copy.
-  for (const t of tabs.slice()) {
-    if (t.pinned && t.path && !list.includes(t.path)) await closeTab(t);
-  }
-  // Make sure every globally-pinned note is open here and flagged.
-  for (const p of list) {
-    let t = tabs.find((x) => x.path === p);
-    if (!t) {
-      t = await openFile(p, findRowByPath(p), { activate: false });
-      if (!t) {
-        if (!warnedMissingPins.has(p)) {
-          warnedMissingPins.add(p);
-          flash('Pinned note missing: ' + baseName(p));
-        }
-        continue;
-      }
-    }
-    t.pinned = true;
-  }
-  // Order: the pinned block in global order, then everything else as-is.
-  const pinnedBlock = list.map((p) => tabs.find((t) => t.path === p)).filter(Boolean);
-  const rest = tabs.filter((t) => !pinnedBlock.includes(t));
-  tabs = [...pinnedBlock, ...rest];
-  renderTabs();
-}
-
-// A sticky window is a dedicated single-note post-it: never let global pins
-// open background tabs in it (its tab bar is hidden, so that just confuses the
-// tab state). It re-syncs on restore — see exitSticky.
-wm.pins.onChanged(({ pinned }) => {
-  if (!document.body.classList.contains('sticky-mode')) applyGlobalPins(pinned);
-});
 
 function setTabDirty(tab, v) {
   tab.dirty = v;
@@ -662,7 +612,10 @@ function reportSession() {
 // that works on Wayland, where global cursor/window coords aren't exposed.
 //   • drop on this window's bar       → reorder
 //   • drop on another notation window → that window adopts the file (tab moves)
-//   • drop on empty space / outside   → a new window opens with the tab
+//   • drop on empty space / outside   → nothing (tab stays put)
+// Detaching a tab into a NEW window is intentional-only: the right-click "Move
+// to new window" action. Dragging a tab out no longer spawns a window — that
+// misfired on near-edge reorders (drop a hair off the bar → surprise window).
 // dragSource is set only in the window that began the drag; dragActivePath is
 // set in every window (via a main broadcast) while any tab drag is in flight.
 let dragSource = null;     // { tab, el, consumed, reordered, droppedInSource }
@@ -694,12 +647,9 @@ async function onTabDragEnd(tab) {
   await new Promise((r) => setTimeout(r, 60));
   if (src.reordered) return;                              // reordered in this bar
   if (src.consumed) { await closeTab(tab, true); closeWindowIfEmpty(); return; } // adopted elsewhere
-  // Released anywhere off the tab bar — own note body, outside the window, or
-  // another window we couldn't hand to on Wayland → detach into a new window.
-  // (A release back ON the bar is a reorder, already handled above.)
-  wm.openInNewWindow(tab.path);
-  await closeTab(tab, true);
-  closeWindowIfEmpty();
+  // Released off the tab bar without another window adopting it — leave the tab
+  // exactly where it was. We no longer detach into a new window on drag-out;
+  // that's right-click "Move to new window" only (see moveTabToNewWindow).
 }
 
 // A transfer (detach / move-to-new-window / adopted-elsewhere) just removed a
@@ -722,8 +672,11 @@ function showInsertionMarker(index) {
   if (!insertMarker) {
     insertMarker = document.createElement('div');
     insertMarker.className = 'tab-insert-marker';
-    tabBar.appendChild(insertMarker);
   }
+  // renderTabs() wipes tabBar.innerHTML, which orphans the marker; re-attach it
+  // whenever it isn't a live child of the bar (pin/unpin/reorder/activate all
+  // re-render, so without this the marker silently stops showing on later drags).
+  if (insertMarker.parentNode !== tabBar) tabBar.appendChild(insertMarker);
   const els = [...tabBar.querySelectorAll('.tab')];
   const barRect = tabBar.getBoundingClientRect();
   let x;
@@ -751,7 +704,7 @@ function onTabBarDrop(e) {
   hideInsertionMarker();
   const index = computeInsertIndex(e.clientX);
   if (dragSource) reorderTo(index);            // same window → reorder
-  else adoptDraggedTab(dragActivePath);        // another window → adopt
+  else adoptDraggedTab(dragActivePath, index); // another window → adopt at drop spot
 }
 
 function reorderTo(index) {
@@ -769,18 +722,36 @@ function reorderTo(index) {
   tabs.splice(from, 1);
   tabs.splice(to, 0, src.tab);
   renderTabs();
-  // Reordering within the pinned block is global state — share the new order.
-  if (src.tab.pinned) wm.pins.reorder(tabs.filter((t) => t.pinned && t.path).map((t) => t.path));
 }
 
-async function adoptDraggedTab(p) {
-  await openFile(p, findRowByPath(p));
+async function adoptDraggedTab(p, index) {
+  const tab = await openFile(p, findRowByPath(p));
+  // Drop onto the bar carries an insertion index: land the tab where it was
+  // dropped (the bar shows an insertion marker there), not at the far right.
+  // A drop onto the note body has no index → it just stays where openFile put it.
+  if (tab && Number.isInteger(index)) placeAdoptedTab(tab, index);
   wm.tabDragAdopted(p); // main relays 'tab-drag-consumed' back to the source window
 }
 
-// A release anywhere in this window that ISN'T the bar: if we're the source it
-// detaches to a new window (handled in onTabDragEnd); if we're another window,
-// adopt it (a drop onto the note body).
+// Move a freshly-adopted tab to the drop position. openFile appended it, so its
+// current slot is the end; an adopted tab is unpinned, so it can't land inside
+// the pinned group — clamp it to the first unpinned slot or later (mirrors the
+// unpinned branch of reorderTo).
+function placeAdoptedTab(tab, index) {
+  const from = tabs.indexOf(tab);
+  if (from < 0) return;
+  let to = index > from ? index - 1 : index;   // removing it shifts indices left
+  const pinnedOthers = tabs.filter((t) => t.pinned && t !== tab).length;
+  to = Math.max(pinnedOthers, Math.min(to, tabs.length - 1));
+  if (to === from) return;
+  tabs.splice(from, 1);
+  tabs.splice(to, 0, tab);
+  renderTabs();
+}
+
+// A release anywhere in this window that ISN'T the bar: if we're the source the
+// tab stays put (handled in onTabDragEnd); if we're another window, adopt it (a
+// drop onto the note body moves the tab here).
 function onWindowDragOver(e) {
   if (!dragActivePath) return;
   e.preventDefault();
@@ -790,9 +761,9 @@ function onWindowDragOver(e) {
 function onWindowDrop(e) {
   if (!dragActivePath) return;
   e.preventDefault();
-  // A release off the tab bar in the SOURCE window is a detach: do nothing here
-  // and let onTabDragEnd's default path pop a new window. In ANY OTHER window,
-  // adopt the dragged file (a drop onto the note body moves the tab here).
+  // A release off the tab bar in the SOURCE window does nothing now (the tab
+  // stays where it was — see onTabDragEnd). In ANY OTHER window, adopt the
+  // dragged file (a drop onto the note body moves the tab here).
   if (!dragSource) adoptDraggedTab(dragActivePath);
 }
 
@@ -825,9 +796,6 @@ async function moveTabToSticky(tab) {
   const prefs = getStickyPrefs(tab.path);
   const size = (Number.isFinite(prefs.width) && Number.isFinite(prefs.height))
     ? { width: prefs.width, height: prefs.height } : null;
-  // The note now lives as the post-it: drop it from the app-global pin list so
-  // it leaves every other window and never reappears once closed there.
-  if (tab.pinned && tab.path) wm.pins.remove(tab.path);
   wm.openInSticky(tab.path, size);
   await closeTab(tab, true);
   closeWindowIfEmpty();
@@ -875,6 +843,21 @@ document.getElementById('toolbar').addEventListener('dblclick', (e) => {
   if (document.body.classList.contains('sticky-mode')) return;
   if (e.target.closest('.tab') || e.target.closest('button')) return;
   wm.toggleMaximize();
+});
+// Right-click the top bar for a stripped-back menu (new file + the gather
+// actions). Tabs keep their own fuller menu; the empty bar is an app-region drag
+// strip, but right-click still fires contextmenu here (same as the sticky title).
+document.getElementById('toolbar').addEventListener('contextmenu', (e) => {
+  if (document.body.classList.contains('sticky-mode')) return;
+  if (e.target.closest('.tab')) return; // tabs have their own context menu
+  e.preventDefault();
+  e.stopPropagation();
+  showContextMenu(e.clientX, e.clientY, [
+    { label: 'New file', action: () => newFile() },
+    { sep: true },
+    { label: 'Gather all windows', disabled: windowCounts.normal < 2, action: () => gatherOpenTabs(false) },
+    { label: 'Gather all windows and stickies', disabled: windowCounts.total < 2, action: () => gatherOpenTabs(true) },
+  ]);
 });
 document.getElementById('sidebar-toggle').addEventListener('click', () => {
   document.body.classList.toggle('sidebar-collapsed');
@@ -1034,9 +1017,6 @@ async function exitSticky() {
     requestAnimationFrame(() => requestAnimationFrame(() => fade.classList.add('out')));
     fade.addEventListener('transitionend', () => fade.remove(), { once: true });
     setTimeout(() => fade.remove(), 600); // safety net if transitionend is dropped
-    // Back to a normal window: catch up on any global-pin changes we ignored
-    // while sticky (sticky-mode now cleared, so the guards above won't skip it).
-    try { await applyGlobalPins(await wm.pins.get()); } catch {}
     reportSession();
   } finally {
     stickyExitInFlight = false;
@@ -1288,7 +1268,6 @@ function applyPathMove(oldPath, newPath) {
     if (!np) continue;
     api.unwatchFile(tab.path);
     api.watchFile(np);
-    if (tab.pinned) wm.pins.rename(tab.path, np); // keep the global pin pointing at the file
     tab.path = np;
     tab.name = baseName(np);
     tab._row = findNodeByPath(np)?._row || null;
@@ -1339,7 +1318,6 @@ async function deleteNode(node) {
   if (!ok) return;
   const res = await api.trash(node._path);
   if (res.error) { flash('Could not delete.'); return; }
-  wm.pins.remove(node._path); // a trashed note can't stay pinned
   closeTabByPath(node._path, true); // skip save — the file is gone, don't re-write it
   const parent = parentNodeOf(node);
   if (parent) await refreshNode(parent);
@@ -1357,7 +1335,6 @@ async function deleteTabFile(tab) {
   if (!ok) return;
   const res = await api.trash(tab.path);
   if (res.error) { flash('Could not delete.'); return; }
-  wm.pins.remove(tab.path); // a trashed note can't stay pinned
   closeTab(tab, true); // skip save — the file is gone
 }
 
@@ -1613,8 +1590,11 @@ async function boot() {
     const r = await wm.session.getRestore();
     if (r && Array.isArray(r.tabs) && r.tabs.length) {
       for (const p of r.tabs) await openFile(p, findRowByPath(p));
-      // (pin flags are NOT restored per window — pins are app-global; the
-      // applyGlobalPins merge below re-flags and re-orders them.)
+      // Re-flag pins from the saved snapshot (the descriptor lists pinned tabs
+      // first, so the restored order already keeps the pinned group at the left).
+      const pinnedPaths = new Set(
+        r.tabs.filter((_, i) => Array.isArray(r.pinned) && r.pinned[i]));
+      for (const t of tabs) if (t.path && pinnedPaths.has(t.path)) t.pinned = true;
       if (tabs.length) {
         const idx = Number.isInteger(r.activeIndex) ? r.activeIndex : 0;
         const target = tabs[idx] || tabs[tabs.length - 1];
@@ -1633,12 +1613,7 @@ async function boot() {
     const t = activeTab();
     if (t) revealInTree(t.path); // show just the active note's folder
   }
-  // Merge the app-global pinned notes into this window (background tabs; the
-  // restored active tab keeps focus). A sticky window is skipped — it shows only
-  // its own note and re-syncs if ever restored to a normal window (exitSticky).
-  if (!document.body.classList.contains('sticky-mode')) {
-    try { await applyGlobalPins(await wm.pins.get()); } catch {}
-  }
+  renderTabs(); // reflect the restored pin flags (pushpin + left grouping)
 }
 boot();
 

@@ -1,3 +1,39 @@
+# Notation v1.2.5
+
+A minimalist local-first Markdown editor with desktop sticky notes. This release
+reworks how pinned tabs, windows and sticky notes fit together, and smooths out
+dragging tabs around.
+
+## Tabs & windows
+- **Pinned tabs are now per-window** — pinning a note keeps it pinned in that
+  window only; it no longer forces the note open in every window. On your next
+  launch, all your pinned notes (and any desktop stickies) gather back into a
+  single window as pinned tabs on the left, so you always start from one tidy
+  workspace.
+- **Drag a tab between windows and it lands where you drop it** — dropping a tab
+  onto another window's tab bar now inserts it at that spot instead of jumping to
+  the far right.
+- **The drag marker stays put** — the blue "drop here" bar that shows where a
+  dragged tab will land no longer disappears after you pin, unpin or reorder
+  tabs.
+- **Right-click the top bar** for a quick menu: New file, Gather all windows, and
+  Gather all windows and stickies.
+
+## Sticky notes
+- **Stickies return as pins on startup** — closing the whole app and relaunching
+  reopens your desktop stickies as pinned tabs in the one consolidated window, so
+  nothing gets lost.
+- **"Gather all windows" leaves stickies alone** — it no longer pulls a stickied
+  note in as a tab; use "Gather all windows and stickies" when you do want to
+  absorb the post-its too.
+
+## Editor
+- **Paste replaces a multi-line selection** — selecting text across several lines
+  and pasting now replaces the whole selection with the clipboard contents, the
+  same way paste already worked within a single line.
+
+---
+
 # Notation v1.2.3
 
 A minimalist local-first Markdown editor with desktop sticky notes. This release

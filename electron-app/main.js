@@ -717,16 +717,34 @@ function collectTabsFromWindow(win) {
   });
 }
 
+// Every file path currently open in a floating post-it (a sticky may hold more
+// than one tab). Used so "Gather all windows" never pulls a stickied file in.
+function stickyOpenPaths() {
+  const set = new Set();
+  for (const w of liveWindows()) {
+    if (!w._sticky) continue;
+    const st = sessionState.get(w.id);
+    const t = st && Array.isArray(st.tabs) ? st.tabs
+      : (w._restore && Array.isArray(w._restore.tabs) ? w._restore.tabs : []);
+    for (const p of t) if (p) set.add(path.resolve(p));
+  }
+  return set;
+}
+
 ipcMain.handle('tabs:gather', async (e, opts) => {
   const target = BrowserWindow.fromWebContents(e.sender);
   if (!target) return [];
   // "Gather all windows" (includeStickies false) leaves post-its floating.
   const includeStickies = !opts || opts.includeStickies !== false;
+  // A file that is currently a floating sticky belongs to that note: when sparing
+  // post-its, never pull it in as a tab — even if a gathered window also had it
+  // open. Absorbing stickied files is reserved for "gather windows and stickies".
+  const spared = includeStickies ? null : stickyOpenPaths();
   const sources = liveWindows().filter((w) => w.id !== target.id && (includeStickies || !w._sticky));
   const gathered = [];
   for (const w of sources) {
     const paths = await collectTabsFromWindow(w);
-    for (const p of paths) if (p) gathered.push(p);
+    for (const p of paths) if (p && !(spared && spared.has(path.resolve(p)))) gathered.push(p);
   }
   for (const w of sources) {
     if (w.isDestroyed()) continue;
@@ -830,86 +848,6 @@ ipcMain.handle('session:getRestore', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   return win && win._restore ? win._restore : null;
 });
-
-// ---- global pinned tabs ---------------------------------------------------
-// Pinned tabs are app-global: ONE ordered path list in config.json, present in
-// every window (stickies included) and restored on relaunch. Main is the single
-// arbiter — every change re-broadcasts the full list and each window reconciles
-// (renderer applyGlobalPins), so concurrent pins/unpins can't diverge.
-function pinnedTabs() {
-  const cfg = readConfig();
-  return Array.isArray(cfg.pinnedTabs)
-    ? cfg.pinnedTabs.filter((p) => typeof p === 'string' && p)
-    : [];
-}
-
-function setPinnedTabs(list) {
-  const cfg = readConfig();
-  cfg.pinnedTabs = [...new Set(list.filter((p) => typeof p === 'string' && p))];
-  writeConfig(cfg);
-  broadcastPins(cfg.pinnedTabs);
-}
-
-function broadcastPins(list) {
-  const pinned = list || pinnedTabs();
-  for (const w of liveWindows()) {
-    if (w.webContents && !w.webContents.isDestroyed()) w.webContents.send('pins:changed', { pinned });
-  }
-}
-
-ipcMain.handle('pins:get', () => pinnedTabs());
-
-ipcMain.on('pins:add', (_e, p) => {
-  if (typeof p !== 'string' || !p) return;
-  setPinnedTabs([...pinnedTabs(), allowExternal(p)]);
-});
-
-ipcMain.on('pins:remove', (_e, p) => {
-  if (typeof p !== 'string' || !p) return;
-  const resolved = path.resolve(p);
-  setPinnedTabs(pinnedTabs().filter((x) => x !== resolved));
-});
-
-// A drag-reorder of the pinned block: apply the new order, but never let a
-// stale renderer list drop a pin another window just added.
-ipcMain.on('pins:reorder', (_e, list) => {
-  if (!Array.isArray(list)) return;
-  const cur = pinnedTabs();
-  const next = list.filter((p) => cur.includes(p));
-  for (const p of cur) if (!next.includes(p)) next.push(p);
-  setPinnedTabs(next);
-});
-
-ipcMain.on('pins:rename', (_e, payload) => {
-  const { from, to } = payload || {};
-  if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) return;
-  const f = path.resolve(from);
-  allowExternal(to);
-  setPinnedTabs(pinnedTabs().map((p) => (p === f ? path.resolve(to) : p)));
-});
-
-// On launch: migrate pre-global sessions (derive the list from the saved
-// per-window pin flags), prune pins whose files vanished while the app was
-// closed, and allowlist out-of-workspace survivors.
-function initPinnedTabs() {
-  const cfg = readConfig();
-  let list = cfg.pinnedTabs;
-  if (!Array.isArray(list)) {
-    list = [];
-    const wins = cfg.session && Array.isArray(cfg.session.windows) ? cfg.session.windows : [];
-    for (const d of wins) {
-      const tabs = d && Array.isArray(d.tabs) ? d.tabs : [];
-      const pinned = d && Array.isArray(d.pinned) ? d.pinned : [];
-      tabs.forEach((p, i) => { if (p && pinned[i] && !list.includes(p)) list.push(p); });
-    }
-  }
-  cfg.pinnedTabs = list.filter((p) => {
-    if (typeof p !== 'string' || !p) return false;
-    try { return fs.statSync(p).isFile(); } catch { return false; }
-  });
-  writeConfig(cfg);
-  for (const p of cfg.pinnedTabs) allowExternal(p);
-}
 
 // ---- workspaces IPC -----------------------------------------------------
 ipcMain.handle('workspaces:list', () =>
@@ -1412,7 +1350,6 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => { quitting = true; persistSession(); closeWorkspaceWatchers(); });
 
   app.whenReady().then(() => {
-    initPinnedTabs();
     restoreSessionOrCreate();
     syncWorkspaceWatchers();
     initUpdater({ readConfig, writeConfig });
@@ -1434,6 +1371,11 @@ if (!app.requestSingleInstanceLock()) {
 
 // On launch, rebuild every window from the saved session; if there's none (first
 // run / cleared), open one fresh window as before.
+// On a fresh launch, EVERYTHING converges into a single window. Pinned tabs (no
+// longer mirrored across windows during a session) and any floating sticky notes
+// are gathered to the left as pinned tabs, in their saved order; every other tab
+// follows. Stickies are "recognised as pins" here — they reopen as ordinary
+// pinned tabs in this one window, not as floating post-its.
 function restoreSessionOrCreate() {
   const cfg = readConfig();
   const windows = cfg.session && Array.isArray(cfg.session.windows) ? cfg.session.windows : [];
@@ -1442,5 +1384,35 @@ function restoreSessionOrCreate() {
   // readable across restarts.
   for (const d of valid) for (const p of d.tabs) allowExternal(p);
   if (!valid.length) { createWindow(); return; }
-  for (const d of valid) createWindow(null, { restore: d });
+
+  // Collect three ordered, de-duplicated path groups across every saved window:
+  //   pinned  → tabs flagged pinned         sticky → the note of any sticky window
+  //   other   → everything else             (pinned + sticky both become pins here)
+  // Pinned/sticky are claimed first so a note open in several windows keeps its
+  // pin even if another window had it as a plain tab.
+  const seen = new Set();
+  const pinnedPaths = [], stickyPaths = [], otherPaths = [];
+  const take = (bucket, p) => { if (p && !seen.has(p)) { seen.add(p); bucket.push(p); } };
+  const normals = valid.filter((d) => !d.sticky);
+  for (const d of normals) d.tabs.forEach((p, i) => { if (Array.isArray(d.pinned) && d.pinned[i]) take(pinnedPaths, p); });
+  for (const d of valid) if (d.sticky) d.tabs.forEach((p) => take(stickyPaths, p));
+  for (const d of normals) d.tabs.forEach((p) => take(otherPaths, p));
+  const pinHead = [...pinnedPaths, ...stickyPaths]; // pins + stickies, all pinned
+  const tabs = [...pinHead, ...otherPaths];
+  const pinnedFlags = tabs.map((_, i) => i < pinHead.length);
+
+  // Geometry/chrome come from the first non-sticky window; the consolidated
+  // window is always a normal editor (never born sticky). Land on the first
+  // non-pinned tab so the user opens on working content, not a pinned reference.
+  const primary = valid.find((d) => !d.sticky) || valid[0];
+  const firstOther = pinHead.length < tabs.length ? pinHead.length : 0;
+  createWindow(null, { restore: {
+    tabs,
+    pinned: pinnedFlags,
+    activeIndex: firstOther,
+    sticky: null,
+    bounds: primary && !primary.sticky ? primary.bounds : undefined,
+    maximized: !!(primary && primary.maximized),
+    sidebarCollapsed: !!(primary && primary.sidebarCollapsed),
+  } });
 }
