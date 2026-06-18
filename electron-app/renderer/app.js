@@ -79,6 +79,10 @@ const EXTERNAL_EXT = new Set([
 ]);
 const extOf = (name) => { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : ''; };
 const isExternalFile = (entry) => !entry.isDir && EXTERNAL_EXT.has(extOf(entry.name));
+// Only markdown-family files render as markdown; everything else (.txt, .log, no
+// extension, …) is shown verbatim as plain text in the editor and on PDF export.
+const MARKDOWN_EXT = new Set(['md', 'markdown', 'mdown', 'mkd']);
+const isMarkdownPath = (p) => MARKDOWN_EXT.has(extOf(p || ''));
 const TAB_CLOSE_SVG =
   '<svg width="9" height="9" viewBox="0 0 8 8" aria-hidden="true"><line x1="1" y1="1" x2="7" y2="7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="7" y1="1" x2="1" y2="7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
 // Small pushpin shown on a pinned tab, before its name.
@@ -92,6 +96,7 @@ async function loadWorkspaces() {
   for (const ws of list) {
     tree.appendChild(makeNode({ name: ws.name, path: ws.path, isDir: true }, 0, true));
   }
+  if (emptyState.style.display !== 'none') refreshEmptyMessage();
 }
 
 function makeNode(entry, depth, isRoot = false) {
@@ -490,7 +495,7 @@ async function activateTab(tab) {
   liveEl.hidden = false;
   emptyState.style.display = 'none';
   window.setMarkdownImageBase(tab.path ? parentDir(tab.path) : null); // relative images resolve per note
-  editor.load(tab.doc, tab.state);
+  editor.load(tab.doc, tab.state, { markdown: isMarkdownPath(tab.path) });
   renderTabs();
   setActiveRow(tab._row && tab._row.isConnected ? tab._row : findRowByPath(tab.path));
   revealInTree(tab.path);
@@ -528,7 +533,7 @@ async function openFile(filePath, row, opts = {}) {
   liveEl.hidden = false;
   emptyState.style.display = 'none';
   window.setMarkdownImageBase(parentDir(filePath)); // relative images resolve per note
-  editor.load(tab.doc, null);
+  editor.load(tab.doc, null, { markdown: isMarkdownPath(filePath) });
   renderTabs();
   setActiveRow(row || findRowByPath(filePath));
   revealInTree(filePath);
@@ -556,10 +561,21 @@ async function closeTab(tab, skipSave = false) {
 
 function closeTabByPath(p, skipSave = false) { const t = tabs.find((x) => x.path === p); if (t) closeTab(t, skipSave); }
 
+// The empty-state sub-line depends on whether any workspace is in the side panel:
+// once you have one, the next step is just picking a file; otherwise prompt to add one.
+function refreshEmptyMessage() {
+  const sub = emptyState.querySelector('.empty-sub');
+  if (!sub) return;
+  sub.textContent = tree.children.length > 0
+    ? 'Select a file to open it in a new tab'
+    : 'Add a workspace, then pick a file from the side panel.';
+}
+
 function showEmpty() {
   activeTabId = null;
   liveEl.hidden = true;
   emptyState.style.display = '';
+  refreshEmptyMessage();
   window.setMarkdownImageBase(null);
   editor.load('');
   setActiveRow(null);
@@ -888,7 +904,14 @@ async function exportActiveToPdf() {
   const t = activeTab();
   if (!t) { flash('Open a note to export.'); return; }
   const title = t.name.replace(/\.[^./]+$/, '');            // doc heading + save name (no extension)
-  const bodyHtml = window.renderMarkdown(editor.getDoc());  // live content, incl. unsaved edits
+  const doc = editor.getDoc();                              // live content, incl. unsaved edits
+  // Non-markdown files (.txt etc.) export verbatim — never re-interpret their text
+  // as markdown, mirroring how the editor shows them.
+  const bodyHtml = isMarkdownPath(t.path)
+    ? window.renderMarkdown(doc)
+    : '<pre style="white-space:pre-wrap;word-wrap:break-word;font-family:inherit;margin:0">'
+      + doc.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      + '</pre>';
   // Math in the note → inline the vendored KaTeX css so the self-contained PDF
   // document can style the markup (best-effort: its woff2 fonts won't resolve
   // there, so KaTeX falls back to system fonts).

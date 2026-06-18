@@ -1,3 +1,36 @@
+# Notation v1.2.6
+
+A minimalist local-first Markdown editor with desktop sticky notes. This release
+fixes editing over a selection, makes copy preserve formatting cleanly, and
+smooths out plain-text files and sticky-note windows.
+
+## Editor
+- **Deleting a selection only deletes what you selected** — pressing Backspace
+  over a highlighted span no longer wipes the whole line; it removes exactly the
+  text you picked, including inside bold/italic and list items.
+- **Copy keeps your formatting (Ctrl+C and right-click)** — copying a selection
+  now carries bold, italic, links and the like as clean rich text, while dropping
+  fonts and sizes, so it pastes tidily into other apps. Ctrl+C now reliably copies
+  the span you've selected.
+- **Right-clicking a selection is more forgiving** — your highlight no longer
+  vanishes just before the menu appears when you right-click on or near it.
+
+## Files
+- **Plain-text files stay plain** — `.txt` (and other non-Markdown files) are now
+  shown and exported exactly as written, instead of being rendered as Markdown.
+  Markdown formatting still applies to `.md` files.
+
+## Sticky notes
+- **Un-maximizing a maximized sticky gives you a normal window** — pulling a
+  full-screened sticky back down now returns a properly sized, operable window
+  instead of snapping to the tiny post-it size and getting stuck.
+
+## Appearance
+- **The unsaved-changes dot matches the tab drag line** — the little "unsaved"
+  marker on a tab is now the same blue as the tab-rearrangement indicator.
+
+---
+
 # Notation v1.2.5
 
 A minimalist local-first Markdown editor with desktop sticky notes. This release

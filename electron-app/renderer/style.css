@@ -190,7 +190,7 @@ body:not(.no-hover) .tab:hover { background: #d9d9d9; }
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #e6b800;
+  background: #1a73c0;
   opacity: 0;
 }
 .tab.dirty .tab-dirty { opacity: 1; }

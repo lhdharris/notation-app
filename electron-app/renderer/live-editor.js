@@ -32,6 +32,7 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
   let composing = false;   // mid-IME-composition (don't re-highlight then)
   let lastCaretCol = 0;    // last known caret column in the active editor
   let goalX = null;        // desired caret viewport-x for a run of consecutive ArrowUp/Down
+  let plain = false;        // true for non-markdown files (.txt etc.): render every line literally
                            //   presses (kept across the new editor activate() builds when
                            //   crossing source lines), so vertical motion never drifts
                            //   horizontally; reset by any non-vertical action
@@ -66,6 +67,8 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
 
   // The block role of a single source line + the length of its leading marker.
   function lineKind(line) {
+    // Plain (non-markdown) files have no block markers — every line is literal text.
+    if (plain) return { type: /^\s*$/.test(line) ? 'blank' : 'paragraph', markEnd: 0, indent: 0 };
     if (/^\s*$/.test(line)) return { type: 'blank', markEnd: 0, indent: 0 };
     if (/^ {0,3}([-*_])\s*(?:\1\s*){2,}$/.test(line)) return { type: 'hr', markEnd: 0, indent: 0 };
     const h = /^( {0,3})(#{1,6})(\s+)/.exec(line);
@@ -96,6 +99,7 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     return lines[i + 1].trim()[0] === '=' ? 1 : 2;
   }
   function lineKindAt(i) {
+    if (plain) return lineKind(lines[i]); // no setext headings in plain files
     const lvl = setextLevelAt(i);
     if (lvl) return { type: 'heading', level: lvl, markEnd: 0, indent: 0, setext: true };
     if (SETEXT_RE.test(lines[i]) && setextLevelAt(i - 1)) return { type: 'setext-under', markEnd: 0, indent: 0 };
@@ -125,6 +129,7 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
   // block, or a GFM table) edited whole. regionStartingAt returns the region whose
   // first line is `i`, regionAt returns the region that *contains* line `i`.
   function regionStartingAt(i) {
+    if (plain) return null; // plain files have no fenced/table/math block regions
     const fence = lines[i].match(/^\s*(`{3,}|~{3,})/);
     if (fence) {
       const mark = fence[1][0];
@@ -173,6 +178,12 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     const el = document.createElement('div');
     el.className = lnClass(k);
     el.dataset.i = String(i);
+    // Plain (non-markdown) files: render the line verbatim, no inline markdown.
+    if (plain) {
+      if (line === '') el.innerHTML = '<br>';
+      else el.textContent = line;
+      return el;
+    }
     let html;
     // list/task lines are split into a leading gutter (nesting spaces + bullet/number/
     // checkbox) and a body (the rendered content). CSS lays them out with flexbox so a
@@ -218,6 +229,13 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
   }
 
   function setActiveHtml(el, raw) {
+    // Plain files: the active line is literal text too (no dimmed markers); keep a
+    // <br> for an empty line so it has height and a placeable caret.
+    if (plain) {
+      if (raw === '') el.innerHTML = '<br>';
+      else el.textContent = raw;
+      return;
+    }
     el.innerHTML = window.highlightInline(raw) || '<br>';
   }
 
@@ -1489,8 +1507,26 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     if (!autoscrollRaf) autoscrollRaf = requestAnimationFrame(autoscrollTick);
   }
 
+  // A right-click within (or within a few px of) an existing selection keeps it, so
+  // the context menu's Copy acts on it. Chromium otherwise collapses the selection to
+  // the click point the instant it lands a pixel outside, before the menu reads it —
+  // the "it disappears before I reach the menu" report. preventDefault on the
+  // right-button press stops that collapse without suppressing the contextmenu event.
+  function pointNearSelection(x, y) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+    const TOL = 6;
+    const rects = sel.getRangeAt(0).getClientRects();
+    for (const r of rects) {
+      if (x >= r.left - TOL && x <= r.right + TOL && y >= r.top - TOL && y <= r.bottom + TOL) return true;
+    }
+    return false;
+  }
   container.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0) {
+      if (e.button === 2 && pointNearSelection(e.clientX, e.clientY)) e.preventDefault();
+      return;
+    }
     goalX = null;            // a click sets a new caret position; drop any vertical goal
     if (e.target.closest('a[href]')) return;                  // link click handled on click
     const gantt = e.target.closest('.gantt-block');
@@ -1639,12 +1675,28 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     if (y || (z && e.shiftKey)) redo(); else undo();
   });
 
+  // Map a rendered offset back to a source column. The rendered text drops inline
+  // markers (** * ~~ ` == __), so for the common emphasis/code cases it's a
+  // subsequence of the source: walk both in lock-step, skipping the source-only
+  // marker chars, until we've consumed `ro` rendered chars. Returns -1 when the
+  // rendered text isn't a clean subsequence (links/images/footnotes/inline-math
+  // substitute text, so there's no faithful inverse) and the caller edge-snaps.
+  function renderedColToSource(source, rendered, ro) {
+    let si = 0, ri = 0;
+    while (ri < ro && si < source.length) {
+      if (rendered[ri] === source[si]) { ri++; si++; }
+      else si++;
+    }
+    return ri < ro ? -1 : si;
+  }
+
   // Map a DOM selection boundary to a source {line, col}. Exact on a plain line
   // (its rendered textContent equals the source line, so the rendered offset IS the
-  // column); on a line carrying markdown markers / inline formatting the rendered
-  // text differs from the source and there's no faithful inverse, so the boundary
-  // snaps to the nearest line edge. A boundary on a block region (code/table) or on
-  // the container itself (Select-All) resolves to the region/child line edge.
+  // column); on a formatted line whose rendered text is a subsequence of the source
+  // (emphasis/code), renderedColToSource recovers the exact column; only when there's
+  // no faithful inverse (links/images/math) does the boundary snap to the nearest
+  // line edge. A boundary on a block region (code/table) or on the container itself
+  // (Select-All) resolves to the region/child line edge.
   function domPointToSource(node, offset, isEnd) {
     if (node === container) {
       const kids = container.children;
@@ -1664,13 +1716,24 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     }
     const i = parseInt(el.dataset.i, 10);
     if (!Number.isFinite(i) || i >= lines.length) return null;
+    // List/task lines render their content in a .ln-body beside a bullet/number
+    // gutter that isn't in the source. Map relative to the body (against the source
+    // past the marker) so the • / 1. substitution doesn't defeat the subsequence
+    // match; the base column shifts the result back into the full line.
+    const body = el.querySelector('.ln-body');
+    const within = body && body.contains(node);
+    const scope = within ? body : el;
+    const base = within ? (lineKindAt(i).markEnd || 0) : 0;
     const r = document.createRange();
-    r.selectNodeContents(el);
+    r.selectNodeContents(scope);
     try { r.setEnd(node, offset); } catch { return { line: i, col: isEnd ? lines[i].length : 0 }; }
     const ro = r.toString().length;
-    const rlen = el.textContent.length;
-    if (el.textContent === lines[i]) return { line: i, col: Math.min(ro, lines[i].length) };
-    return { line: i, col: ro <= rlen / 2 ? 0 : lines[i].length };
+    const rendered = scope.textContent;
+    const source = within ? lines[i].slice(base) : lines[i];
+    if (rendered === source) return { line: i, col: Math.min(base + ro, lines[i].length) };
+    const col = renderedColToSource(source, rendered, ro);
+    if (col >= 0) return { line: i, col: Math.min(base + col, lines[i].length) };
+    return { line: i, col: ro <= rendered.length / 2 ? base : lines[i].length };
   }
 
   // Backspace / Delete / a typed character / Enter on a selection that spans
@@ -1718,6 +1781,87 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
     }
   });
 
+  // Copy a selection over rendered (inactive) content as clean rich text: keep the
+  // semantic shape (bold/italic/strike/links/code/lists/tables) but drop the editor's
+  // own chrome (dimmed markers, list bullets/numbers, checkboxes) and every class /
+  // style / font attribute. The browser's own copy would instead serialise the
+  // computed CSS (fonts, sizes) into the HTML — exactly what we want stripped.
+  const COPY_KEEP = {
+    STRONG: 'strong', B: 'strong', EM: 'em', I: 'em', DEL: 'del', S: 'del',
+    MARK: 'mark', CODE: 'code', SUP: 'sup', SUB: 'sub', PRE: 'pre',
+    BLOCKQUOTE: 'blockquote', UL: 'ul', OL: 'ol', LI: 'li',
+    TABLE: 'table', THEAD: 'thead', TBODY: 'tbody', TR: 'tr', TD: 'td', TH: 'th',
+    H1: 'h1', H2: 'h2', H3: 'h3', H4: 'h4', H5: 'h5', H6: 'h6', P: 'p', HR: 'hr',
+  };
+  const COPY_DROP = ['le-mark', 'ln-gutter', 'ln-bul', 'ln-num', 'task-checkbox', 'chevron'];
+  function copyEmit(parent, node) {
+    if (node.nodeType === Node.TEXT_NODE) { parent.appendChild(document.createTextNode(node.data)); return; }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const cls = node.classList;
+    if (COPY_DROP.some((c) => cls.contains(c))) return;          // editor chrome / dimmed markers
+    if (cls.contains('katex')) {                                  // rendered math → its TeX (avoid duplicate MathML+HTML text)
+      const tex = node.querySelector('annotation');
+      const code = document.createElement('code');
+      code.textContent = tex ? tex.textContent : node.textContent;
+      parent.appendChild(code);
+      return;
+    }
+    const tag = node.tagName;
+    if (tag === 'BR') { parent.appendChild(document.createElement('br')); return; }
+    if (tag === 'A') {
+      const a = document.createElement('a');
+      const href = node.getAttribute('href');
+      if (href) a.setAttribute('href', href);
+      node.childNodes.forEach((c) => copyEmit(a, c));
+      parent.appendChild(a);
+      return;
+    }
+    const keep = COPY_KEEP[tag];
+    if (keep) {
+      const e = document.createElement(keep);
+      node.childNodes.forEach((c) => copyEmit(e, c));
+      parent.appendChild(e);
+      return;
+    }
+    node.childNodes.forEach((c) => copyEmit(parent, c));         // unwrap unknown (span.ln-body, etc.), keep its text
+  }
+  function cleanCopyHtml(range) {
+    const frag = range.cloneContents();
+    const out = document.createElement('div');
+    frag.childNodes.forEach((node) => {
+      // Each rendered line is its own .ln div (data-i) → its own paragraph; block
+      // regions (code/table) carry their own structural tags inside markdown-body.
+      const isLine = node.nodeType === Node.ELEMENT_NODE && node.dataset && node.dataset.i !== undefined;
+      if (isLine) {
+        const p = document.createElement('p');
+        node.childNodes.forEach((c) => copyEmit(p, c));
+        if (p.childNodes.length) out.appendChild(p);
+      } else {
+        copyEmit(out, node);
+      }
+    });
+    return out.innerHTML;
+  }
+  document.addEventListener('copy', (e) => {
+    if (container.hidden) return;
+    const focused = document.activeElement;
+    if (!(container.contains(focused) || focused === document.body || focused === container)) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return;
+    // A selection wholly inside a raw-text editor (the active line or a table cell)
+    // stays the browser's: copying its raw markdown as plain text is the right thing.
+    if (active >= 0 && ta && ta.contains(range.startContainer) && ta.contains(range.endContainer)) return;
+    if (tedit && tedit.cellEl && tedit.cellEl.contains(range.startContainer) && tedit.cellEl.contains(range.endContainer)) return;
+    const html = cleanCopyHtml(range);
+    const cd = e.clipboardData || window.clipboardData;
+    if (!cd) return;
+    e.preventDefault();
+    cd.setData('text/html', html);
+    cd.setData('text/plain', sel.toString());
+  });
+
   // Paste over a selection that spans rendered (inactive) lines — there's no
   // active contenteditable to receive it, so the doc handles it: delete the span
   // (keep the head of the first line + tail of the last) and splice the clipboard
@@ -1754,7 +1898,10 @@ window.createLiveEditor = function createLiveEditor(container, opts = {}) {
 
   // ---- public API -------------------------------------------------------
   return {
-    load(text, state) {
+    load(text, state, opts) {
+      // Markdown by default (so showEmpty()'s editor.load('') is unaffected); a .txt
+      // and other non-markdown files load with opts.markdown === false → plain mode.
+      plain = !!(opts && opts.markdown === false);
       lines = String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n');
       if (lines.length === 0) lines = [''];
       refreshRefs(); // resolve [label][id] / [^id] before the first render

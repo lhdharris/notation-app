@@ -256,7 +256,19 @@ function createWindow(initialFile, opts = {}) {
     }
     sendStickyMaxState(true); // Linux: tolerate the WM maximize as before
   });
-  win.on('unmaximize', () => { if (win._sticky) sendStickyMaxState(false); });
+  win.on('unmaximize', () => {
+    // The one un-maximize we must ignore is stickify's own (wm-sticky-shrink
+    // un-maximizes a maximized window before shrinking it); _ignoreUnmaximize is set
+    // around that call. Any other un-maximize of a sticky is the user de-maximizing it
+    // (e.g. pulling the top bar down) — which used to strand the window at the tiny
+    // post-it footprint, so exit sticky mode into a normal operable window (the
+    // renderer replies with wm-sticky-restore). We can't gate this on a prior
+    // 'maximize' event: a frameless always-on-top sticky doesn't reliably emit one on
+    // Wayland, which would leave the de-maximize stuck post-it sized.
+    if (win._ignoreUnmaximize) { win._ignoreUnmaximize = false; return; }
+    if (!win._sticky) return;
+    if (!win.isDestroyed()) win.webContents.send('sticky:restore-request');
+  });
 
   // Keep the persisted session current as the window moves/resizes, and update a
   // sticky's remembered post-it size when the user drags it. The _animating flag
@@ -420,7 +432,14 @@ ipcMain.handle('wm-sticky-shrink', async (e, size) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win || win._sticky) return;
   const wasMaximized = win.isMaximized();
-  if (wasMaximized) win.unmaximize();
+  if (wasMaximized) {
+    // On Wayland this un-maximize fires its 'unmaximize' event asynchronously, after
+    // _sticky is set below — flag it so that handler ignores it and doesn't bounce the
+    // window straight back out of sticky mode. Safety timeout in case no event arrives.
+    win._ignoreUnmaximize = true;
+    win.unmaximize();
+    setTimeout(() => { if (!win.isDestroyed()) win._ignoreUnmaximize = false; }, 2000);
+  }
   const cur = win.getBounds();
   win._sticky = { originalBounds: cur, stickyBounds: null, wasMaximized };
   broadcastWindowCount(); // normal-window count changed (this one is a sticky now)
@@ -507,6 +526,19 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
     // the post-it footprint, not the live (maybe full-screen) bounds (#3).
     if (win.isMaximized()) win.unmaximize();
     await animateBounds(win, originalBounds, STICKY_ANIM_MS, stickyBounds);
+  } else {
+    // No remembered pre-sticky size (e.g. a born-sticky window, or a sticky maximized
+    // straight from session restore): grow to a sensible centred window so it can't be
+    // left stranded at the tiny post-it footprint.
+    if (win.isMaximized()) win.unmaximize();
+    const area = screen.getDisplayMatching(win.getBounds()).workArea;
+    const w = Math.min(900, area.width - 80), h = Math.min(680, area.height - 80);
+    const target = {
+      x: Math.round(area.x + (area.width - w) / 2),
+      y: Math.round(area.y + (area.height - h) / 2),
+      width: w, height: h,
+    };
+    await animateBounds(win, target, STICKY_ANIM_MS, stickyBounds);
   }
   persistSessionSoon();
 });
