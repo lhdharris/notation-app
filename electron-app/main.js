@@ -419,6 +419,18 @@ function clampToDisplay(bounds) {
   };
 }
 
+// A sensible centred normal-window rect on the window's current display — the fallback
+// size when exiting sticky mode with no remembered pre-sticky bounds.
+function defaultCentredBounds(win) {
+  const area = screen.getDisplayMatching(win.getBounds()).workArea;
+  const w = Math.min(900, area.width - 80), h = Math.min(680, area.height - 80);
+  return {
+    x: Math.round(area.x + (area.width - w) / 2),
+    y: Math.round(area.y + (area.height - h) / 2),
+    width: w, height: h,
+  };
+}
+
 // ---- window-control IPC -------------------------------------------------
 ipcMain.on('wm-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 
@@ -519,6 +531,13 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   // on every animation tick (the renderer reflows a beat behind setBounds).
   win.setBackgroundColor('#ffffff');
   if (wasMaximized) {
+    // Grow to the pre-sticky NORMAL footprint before maximizing. The WM records a
+    // window's current (un-maximized) geometry as its un-maximize/restore size at the
+    // moment it's maximized — and right now the window is still the tiny post-it. Skip
+    // this and a later top-bar drag-down un-maximizes the editor straight back to the
+    // sticky footprint (a useless, sub-minimum normal window).
+    if (win.isMaximized()) win.unmaximize();
+    await animateBounds(win, originalBounds || defaultCentredBounds(win), STICKY_ANIM_MS, stickyBounds);
     win.maximize();
   } else if (originalBounds) {
     // The sticky itself may be dblclick-maximized right now — leave that state
@@ -531,15 +550,13 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
     // straight from session restore): grow to a sensible centred window so it can't be
     // left stranded at the tiny post-it footprint.
     if (win.isMaximized()) win.unmaximize();
-    const area = screen.getDisplayMatching(win.getBounds()).workArea;
-    const w = Math.min(900, area.width - 80), h = Math.min(680, area.height - 80);
-    const target = {
-      x: Math.round(area.x + (area.width - w) / 2),
-      y: Math.round(area.y + (area.height - h) / 2),
-      width: w, height: h,
-    };
-    await animateBounds(win, target, STICKY_ANIM_MS, stickyBounds);
+    await animateBounds(win, defaultCentredBounds(win), STICKY_ANIM_MS, stickyBounds);
   }
+  // Re-establish the normal editor floor (matches a normal window's creation minimum):
+  // a window that has left sticky mode must never sit below a usable size, whatever the
+  // WM's restore bounds happen to be. Set AFTER the grow — animateBounds snaps its start
+  // to the 320x240 stickyBounds, which relies on the 0,0 floor unlockStickySize left.
+  if (!win.isDestroyed()) win.setMinimumSize(640, 480);
   persistSessionSoon();
 });
 
