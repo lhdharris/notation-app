@@ -1,3 +1,61 @@
+# Notation v1.3.0
+
+A minimalist local-first Markdown editor with desktop sticky notes. This release
+rolls up everything since v1.2.3: per-window pinned tabs and one-window
+consolidation, smoother tab dragging, more precise selection editing and cleaner
+copy, plain-text file handling, and a batch of sticky-note window fixes.
+
+## Tabs & windows
+- **Pinned tabs are now per-window** — pinning a note keeps it pinned in that
+  window only; it no longer forces the note open in every window. On your next
+  launch, all your pinned notes (and any desktop stickies) gather back into a
+  single window as pinned tabs on the left, so you always start from one tidy
+  workspace.
+- **Drag a tab between windows and it lands where you drop it** — dropping a tab
+  onto another window's tab bar now inserts it at that spot instead of jumping to
+  the far right.
+- **The drag marker stays put** — the blue "drop here" bar that shows where a
+  dragged tab will land no longer disappears after you pin, unpin or reorder
+  tabs, and it matches the unsaved-changes dot colour.
+- **Right-click the top bar** for a quick menu: New file, Gather all windows, and
+  Gather all windows and stickies.
+
+## Editor
+- **Deleting a selection only deletes what you selected** — pressing Backspace
+  over a highlighted span no longer wipes the whole line; it removes exactly the
+  text you picked, including inside bold/italic and list items.
+- **Copy keeps your formatting (Ctrl+C and right-click)** — copying a selection
+  now carries bold, italic, links and the like as clean rich text, while dropping
+  fonts and sizes, so it pastes tidily into other apps. Ctrl+C reliably copies
+  the span you've selected.
+- **Right-clicking a selection is more forgiving** — your highlight no longer
+  vanishes just before the menu appears when you right-click on or near it.
+- **Paste replaces a multi-line selection** — selecting text across several lines
+  and pasting now replaces the whole selection with the clipboard contents.
+- **Cross-line selection edits** — selecting past the current line and then
+  typing, deleting, or pressing Enter now edits the whole selection correctly.
+
+## Files
+- **Plain-text files stay plain** — `.txt` (and other non-Markdown files) are now
+  shown and exported exactly as written, instead of being rendered as Markdown.
+  Markdown formatting still applies to `.md` files.
+
+## Sticky notes
+- **Stickies return as pins on startup** — closing the whole app and relaunching
+  reopens your desktop stickies as pinned tabs in the one consolidated window, so
+  nothing gets lost.
+- **"Gather all windows" leaves stickies alone** — it no longer pulls a stickied
+  note in as a tab; use "Gather all windows and stickies" when you do want to
+  absorb the post-its too.
+- **Un-maximizing a maximized sticky gives you a normal window** — pulling a
+  full-screened sticky back down now returns a properly sized, operable window
+  instead of snapping to the tiny post-it size.
+- **Dragging a restored sticky down keeps its size** — a maximized window that
+  was restored from a sticky no longer shrinks to post-it size when you drag it
+  down from the top of the screen.
+
+---
+
 # Notation v1.2.6
 
 A minimalist local-first Markdown editor with desktop sticky notes. This release
